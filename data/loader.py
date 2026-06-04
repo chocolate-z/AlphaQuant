@@ -6,6 +6,8 @@ import json
 import time
 import random
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import requests
@@ -431,14 +433,14 @@ def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFram
 
 def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
     """
-    批量加载股票数据，自动限速防止被封。
+    批量加载股票数据，并发4线程 + 信号量限速防止被封。
 
     Args:
         force_refresh: 强制重新从网络拉取
         quick: 快速模式 — 从全A股随机抽 QUICK_STOCK_COUNT 只 + 近 QUICK_HISTORY_YEARS 年
                False   — 完整模式 — 从全A股随机抽 FULL_STOCK_COUNT 只 + 完整历史
     """
-    start = START_DATE.replace("-", "")
+    fetch_start = START_DATE.replace("-", "")
 
     all_codes = fetch_all_stock_codes()
     today_str = datetime.today().strftime("%Y%m%d")
@@ -447,44 +449,70 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
         count = min(QUICK_STOCK_COUNT, len(all_codes))
         pool  = random.sample(all_codes, count)
         cutoff = datetime.today() - timedelta(days=QUICK_HISTORY_YEARS * 365)
-        start  = cutoff.strftime("%Y%m%d")
-        logger.info(f"[快速模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {start}")
+        fetch_start = cutoff.strftime("%Y%m%d")
+        logger.info(f"[快速模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {fetch_start}")
         logger.info(f"[快速模式] 股票列表: {pool}")
     else:
         count = min(FULL_STOCK_COUNT, len(all_codes))
         pool  = random.sample(all_codes, count)
-        logger.info(f"[完整模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {start}")
+        logger.info(f"[完整模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {fetch_start}")
         logger.info(f"[完整模式] 股票列表: {pool}")
 
-    result = {}
-    total  = len(pool)
-    for idx, code in enumerate(pool, 1):
+    result: dict = {}
+    total = len(pool)
+    _print_lock = threading.Lock()
+    _count_lock = threading.Lock()
+    _semaphore = threading.Semaphore(4)
+    _completed = [0]  # mutable counter
+
+    def _fetch_one(args):
+        idx, code = args
         name = get_stock_name(code)
-        print(f"  [{idx:>3}/{total}] {code}  {name:<8} 拉取中...", flush=True)
+        with _print_lock:
+            print(f"  [{idx:>3}/{total}] {code}  {name:<8} 拉取中...", flush=True)
         logger.info(f"正在加载 ({idx}/{total}): {code} {name}")
+
+        _semaphore.acquire()
         try:
+            time.sleep(random.uniform(0.3, 1.0))  # per-thread random delay
             if quick:
-                df = _fetch_kline(code, start, today_str)
+                df = _fetch_kline(code, fetch_start, today_str)
             else:
                 df = load_stock_data(code, force_refresh=force_refresh)
+        finally:
+            _semaphore.release()
 
-            if not df.empty:
-                result[code] = df
+        if df is not None and not df.empty:
+            with _print_lock:
                 print(f"  [{idx:>3}/{total}] {code}  {name:<8} ✓ {len(df)} 条")
-                logger.info(f"[{code}] {name} ✓ {len(df)} 条")
-            else:
-                print(f"  [{idx:>3}/{total}] {code}  {name:<8} ✗ 无数据")
-                logger.warning(f"[{code}] {name} ✗ 三个源均无数据")
-        except Exception as e:
-            logger.error(f"[{code}] 加载异常: {e}")
-
-        # 动态限速：每5只股票后稍长休息，避免持续高频请求
-        if idx % 5 == 0:
-            wait = random.uniform(3, 5)
-            logger.info(f"已完成 {idx}/{total}，休息 {wait:.1f}s 避免限流...")
-            time.sleep(wait)
+            logger.info(f"[{code}] {name} ✓ {len(df)} 条")
+            return code, df
         else:
-            _throttle(1.2)   # 正常间隔 0.6~1.8s
+            with _print_lock:
+                print(f"  [{idx:>3}/{total}] {code}  {name:<8} ✗ 无数据")
+            logger.warning(f"[{code}] {name} ✗ 三个源均无数据")
+            return code, None
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_fetch_one, (idx, code)): code
+                   for idx, code in enumerate(pool, 1)}
+        for future in as_completed(futures):
+            try:
+                code, df = future.result()
+                if df is not None:
+                    result[code] = df
+            except Exception as e:
+                logger.error(f"加载异常: {e}")
+
+            with _count_lock:
+                _completed[0] += 1
+                done = _completed[0]
+
+            # 每完成5只，稍作休息
+            if done % 5 == 0:
+                wait = random.uniform(2, 3)
+                logger.info(f"已完成 {done}/{total}，休息 {wait:.1f}s 避免限流...")
+                time.sleep(wait)
 
     logger.info(f"数据加载完成：{len(result)}/{total} 只成功")
     return result
