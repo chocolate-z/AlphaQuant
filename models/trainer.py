@@ -52,7 +52,10 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
     y_vl_np = y_val.copy()
 
     train_ds     = TensorDataset(X_tr, y_tr)
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False)
+    # num_workers>0 让 CPU 预取数据，不阻塞 GPU；pin_memory 加速 CPU→GPU 传输
+    _nw = min(4, os.cpu_count() or 1) if device.type == "cuda" else 0
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False,
+                              num_workers=_nw, pin_memory=(device.type == "cuda"))
 
     model = LSTMModel().to(device)
     pretrained_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
@@ -77,6 +80,9 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
     no_improve   = 0
 
     history = {"loss": [], "train_auc": [], "val_auc": []}
+    # AMP：GPU 上用 float16 前向/反向，自动提速 1.5~3x；CPU 上无效，直接跳过
+    use_amp = device.type == "cuda"
+    scaler_amp = torch.cuda.amp.GradScaler() if use_amp else None
 
     for epoch in range(1, MAX_EPOCHS + 1):
         model.train()
@@ -85,17 +91,30 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
         train_labels = []
 
         for xb, yb in train_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad()
-            pred = model(xb)
-            # 手动加权 BCE（处理正负样本不平衡）
-            loss = -(
-                pos_weight_val * yb * torch.log(pred + 1e-9)
-                + (1 - yb) * torch.log(1 - pred + 1e-9)
-            ).mean()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)   # 比 zero_grad() 省内存
+
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    pred = model(xb)
+                    loss = -(
+                        pos_weight_val * yb * torch.log(pred + 1e-9)
+                        + (1 - yb) * torch.log(1 - pred + 1e-9)
+                    ).mean()
+                scaler_amp.scale(loss).backward()
+                scaler_amp.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler_amp.step(optimizer)
+                scaler_amp.update()
+            else:
+                pred = model(xb)
+                loss = -(
+                    pos_weight_val * yb * torch.log(pred + 1e-9)
+                    + (1 - yb) * torch.log(1 - pred + 1e-9)
+                ).mean()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
 
             total_loss += loss.item() * len(xb)
             train_preds.extend(pred.detach().cpu().numpy().flatten())
