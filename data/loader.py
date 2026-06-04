@@ -13,7 +13,8 @@ import pandas as pd
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DATA_CACHE_DIR, START_DATE, STOCK_POOL, QUICK_STOCK_COUNT, QUICK_HISTORY_YEARS
+from config import (DATA_CACHE_DIR, START_DATE, STOCK_POOL,
+                    FULL_STOCK_COUNT, QUICK_STOCK_COUNT, QUICK_HISTORY_YEARS, STOCK_LIST_CACHE)
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +292,70 @@ def _fetch_from_sina(stock_code: str, start: str, end: str) -> pd.DataFrame:
     return df
 
 
+# ── 全A股列表（新浪接口，带本地缓存）────────────────────────────────────
+
+def fetch_all_stock_codes(force: bool = False) -> list:
+    """
+    从新浪拉取全量 A 股代码列表（沪A + 深A + 科创板 + 创业板）。
+    结果缓存到本地 JSON，7天内复用。
+
+    Returns:
+        list of str，格式如 ["sh600519", "sz000858", ...]
+    """
+    cache_file = os.path.join(DATA_CACHE_DIR, STOCK_LIST_CACHE)
+
+    # 读取本地缓存（7天内有效）
+    if not force and os.path.exists(cache_file):
+        mtime = os.path.getmtime(cache_file)
+        if time.time() - mtime < 7 * 86400:
+            with open(cache_file, "r") as f:
+                codes = json.load(f)
+            if codes:
+                logger.info(f"使用本地股票列表缓存，共 {len(codes)} 只")
+                return codes
+
+    # 新浪 A 股列表接口（沪A=hs_a, 深A=sz_a，含科创/创业）
+    all_codes = []
+    nodes = [("hs_a", "sh"), ("sz_a", "sz")]
+    for node, prefix in nodes:
+        page = 1
+        while True:
+            url = (
+                f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php"
+                f"/Market_Center.getHQNodeData"
+                f"?page={page}&num=100&sort=symbol&asc=1&node={node}&_s_r_a=page"
+            )
+            try:
+                resp = requests.get(url, timeout=15, headers=_sina_headers())
+                if resp.status_code != 200 or not resp.text.strip():
+                    break
+                rows = json.loads(resp.text)
+                if not rows:
+                    break
+                for r in rows:
+                    sym = r.get("symbol", "")
+                    if sym:
+                        all_codes.append(sym)   # 新浪返回的已经是 sh600519 格式
+                if len(rows) < 100:
+                    break
+                page += 1
+                time.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"拉取股票列表第{page}页失败: {e}")
+                break
+
+    if all_codes:
+        with open(cache_file, "w") as f:
+            json.dump(all_codes, f)
+        logger.info(f"全A股列表已更新，共 {len(all_codes)} 只，缓存至 {cache_file}")
+    else:
+        # 接口失败时退回内置精选池
+        logger.warning("全A股列表拉取失败，使用内置精选股票池")
+        all_codes = list(STOCK_POOL)
+
+    return all_codes
+
+
 # ── 统一拉取入口（三级自动降级）─────────────────────────────────────────
 
 def _fetch_kline(stock_code: str, start: str, end: str) -> pd.DataFrame:
@@ -370,18 +435,26 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
 
     Args:
         force_refresh: 强制重新从网络拉取
-        quick: 快速模式 — 随机抽 QUICK_STOCK_COUNT 只 + 近 QUICK_HISTORY_YEARS 年
+        quick: 快速模式 — 从全A股随机抽 QUICK_STOCK_COUNT 只 + 近 QUICK_HISTORY_YEARS 年
+               False   — 完整模式 — 从全A股随机抽 FULL_STOCK_COUNT 只 + 完整历史
     """
-    pool  = list(STOCK_POOL)
     start = START_DATE.replace("-", "")
 
+    all_codes = fetch_all_stock_codes()
+    today_str = datetime.today().strftime("%Y%m%d")
+
     if quick:
-        count = min(QUICK_STOCK_COUNT, len(pool))
-        pool  = random.sample(pool, count)
+        count = min(QUICK_STOCK_COUNT, len(all_codes))
+        pool  = random.sample(all_codes, count)
         cutoff = datetime.today() - timedelta(days=QUICK_HISTORY_YEARS * 365)
         start  = cutoff.strftime("%Y%m%d")
-        logger.info(f"[快速模式] 随机选取 {count} 只，起始日期 {start}")
+        logger.info(f"[快速模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {start}")
         logger.info(f"[快速模式] 股票列表: {pool}")
+    else:
+        count = min(FULL_STOCK_COUNT, len(all_codes))
+        pool  = random.sample(all_codes, count)
+        logger.info(f"[完整模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {start}")
+        logger.info(f"[完整模式] 股票列表: {pool}")
 
     result = {}
     total  = len(pool)
@@ -389,7 +462,7 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
         logger.info(f"正在加载 ({idx}/{total}): {code}")
         try:
             if quick:
-                df = _fetch_kline(code, start, datetime.today().strftime("%Y%m%d"))
+                df = _fetch_kline(code, start, today_str)
             else:
                 df = load_stock_data(code, force_refresh=force_refresh)
 
@@ -397,7 +470,7 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
                 result[code] = df
                 logger.info(f"[{code}] ✓ {len(df)} 条")
             else:
-                logger.warning(f"[{code}] ✗ 两个源均无数据")
+                logger.warning(f"[{code}] ✗ 三个源均无数据")
         except Exception as e:
             logger.error(f"[{code}] 加载异常: {e}")
 

@@ -39,9 +39,11 @@ STOCK_POOL = [
     "sh600048",  # 保利发展  地产
 ]
 
-# ── 快速模式 ─────────────────────────────────────────
-QUICK_STOCK_COUNT   = 10    # 随机抽取的股票数量
-QUICK_HISTORY_YEARS = 2     # 只拉取近 N 年数据
+# ── 股票抽样 ──────────────────────────────────────────
+FULL_STOCK_COUNT    = 50    # 完整模式：从全A股随机抽取数量
+QUICK_STOCK_COUNT   = 10    # 快速模式：随机抽取数量
+QUICK_HISTORY_YEARS = 2     # 快速模式：只拉取近 N 年数据
+STOCK_LIST_CACHE    = "stock_list.json"  # 全A股列表缓存文件名（存于 DATA_CACHE_DIR）
 
 # ── 数据 ─────────────────────────────────────────────
 START_DATE       = "20190101"
