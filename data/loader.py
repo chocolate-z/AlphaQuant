@@ -34,6 +34,13 @@ _SINA_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
 }
 
+def _sina_headers() -> dict:
+    return {
+        "Referer": "http://finance.sina.com.cn/",
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+
 def _sohu_headers() -> dict:
     """每次请求随机换 UA，避免频率特征。"""
     return {
@@ -197,22 +204,111 @@ def _fetch_from_tencent(stock_code: str, start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-# ── 统一拉取入口（自动降级）────────────────────────────────────────────
+# ── 新浪数据源（第三备用）────────────────────────────────────────────
+
+def _fetch_from_sina(stock_code: str, start: str, end: str) -> pd.DataFrame:
+    """
+    新浪财经日K线（第三备用源）。
+    接口: money.finance.sina.com.cn/quotes_service/api/json_v2.php
+    注意：单次最多返回 1023 条，需分批拉取覆盖完整历史。
+    字段: d(日期) o(开) h(高) l(低) c(收) v(量/手) amount(额/元)
+    非前复权，但特征层使用的全是相对量（收益率/比率），影响可接受。
+    """
+    start_dt = datetime.strptime(start, "%Y%m%d")
+    end_dt   = datetime.strptime(end,   "%Y%m%d")
+
+    all_records = []
+    batch_days  = 1000            # 每批约1000个交易日（约4年）
+    cur_end     = end_dt
+
+    while cur_end > start_dt:
+        cur_start = max(start_dt, cur_end - timedelta(days=batch_days * 1.5))
+        url = (
+            f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
+            f"/CN_MarketData.getKLineData"
+            f"?symbol={stock_code}&scale=240&datalen=1023&ma=no"
+        )
+        try:
+            resp = requests.get(url, timeout=20, headers=_sina_headers())
+            if resp.status_code in (503, 429):
+                wait = 3 + random.uniform(0, 2)
+                time.sleep(wait)
+                break
+            resp.raise_for_status()
+            raw = resp.text.strip()
+            if not raw or raw == "null":
+                break
+
+            rows = json.loads(raw)
+            if not rows:
+                break
+
+            for row in rows:
+                try:
+                    d = pd.Timestamp(row["d"])
+                    if d < pd.Timestamp(start_dt) or d > pd.Timestamp(end_dt):
+                        continue
+                    all_records.append({
+                        "date":      d,
+                        "open":      float(row["o"]),
+                        "close":     float(row["c"]),
+                        "high":      float(row["h"]),
+                        "low":       float(row["l"]),
+                        "volume":    float(row["v"]) * 100,
+                        "amount":    float(row.get("amount", 0)),
+                        "pct_change": 0.0,
+                        "turnover":  0.0,
+                    })
+                except (KeyError, ValueError):
+                    continue
+
+            # 新浪单次返回最近 1023 条，已覆盖到请求最早日期则退出
+            earliest = pd.Timestamp(rows[0]["d"])
+            if earliest <= pd.Timestamp(start_dt):
+                break
+            cur_end = earliest - timedelta(days=1)
+            _throttle(1.5)
+
+        except Exception as e:
+            logger.warning(f"[{stock_code}] 新浪拉取异常: {e}")
+            break
+
+    if not all_records:
+        return pd.DataFrame()
+
+    df = (pd.DataFrame(all_records)
+            .drop_duplicates(subset=["date"])
+            .sort_values("date")
+            .reset_index(drop=True))
+    df["pct_change"] = df["close"].pct_change().fillna(0) * 100
+    return df
+
+
+# ── 统一拉取入口（三级自动降级）─────────────────────────────────────────
 
 def _fetch_kline(stock_code: str, start: str, end: str) -> pd.DataFrame:
     """
-    先尝试搜狐，失败自动降级到腾讯。
-    两者都失败则返回空 DataFrame。
+    拉取优先级：搜狐 → 腾讯 → 新浪
+    三个源都可用，任一成功即返回。
     """
-    df = _fetch_from_sohu(stock_code, start, end)
-    if not df.empty:
-        return df
+    sources = [
+        ("搜狐",  _fetch_from_sohu),
+        ("腾讯",  _fetch_from_tencent),
+        ("新浪",  _fetch_from_sina),
+    ]
+    for name, fetch_fn in sources:
+        try:
+            df = fetch_fn(stock_code, start, end)
+            if not df.empty:
+                if name != "搜狐":
+                    logger.info(f"[{stock_code}] 使用{name}备用源，获取 {len(df)} 条")
+                return df
+            logger.warning(f"[{stock_code}] {name}源无数据，尝试下一个...")
+        except Exception as e:
+            logger.warning(f"[{stock_code}] {name}源异常: {e}，尝试下一个...")
 
-    logger.info(f"[{stock_code}] 搜狐失败，切换腾讯备用源...")
-    df = _fetch_from_tencent(stock_code, start, end)
-    if not df.empty:
-        logger.info(f"[{stock_code}] 腾讯备用源成功，获取 {len(df)} 条")
-    return df
+    logger.error(f"[{stock_code}] 三个数据源均失败")
+    return pd.DataFrame()
 
 
 # ── 缓存管理 ──────────────────────────────────────────────────────────
