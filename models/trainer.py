@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     BATCH_SIZE, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR_PATIENCE,
     LEARNING_RATE, TRAIN_RATIO, MODEL_SAVE_DIR, REPORTS_DIR,
+    CPU_THREAD_RATIO,
 )
 from models.lstm_model import LSTMModel
 
@@ -33,10 +34,16 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cpu":
-        # 让 PyTorch 用满所有 CPU 核心（默认只用 1 个）
-        n_threads = os.cpu_count() or 1
+        total = os.cpu_count() or 1
+        if CPU_THREAD_RATIO == 0:
+            n_threads = total
+        elif 0 < CPU_THREAD_RATIO <= 1:
+            n_threads = max(1, int(total * CPU_THREAD_RATIO))
+        else:
+            n_threads = max(1, min(int(CPU_THREAD_RATIO), total))
         torch.set_num_threads(n_threads)
         torch.set_num_interop_threads(max(1, n_threads // 2))
+        print(f"  CPU 线程: {n_threads}/{total} 核")
     logger.info(f"使用设备: {device}")
 
     n = len(X)
