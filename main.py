@@ -271,6 +271,7 @@ def run_single_backtest():
 
     # 对齐日期
     import numpy as np
+    import pandas as pd
     date_series = pd.to_datetime(dates)
     prob_df = pd.DataFrame({"date": date_series, "prob": probs})
     merged  = df.merge(prob_df, on="date", how="inner").sort_values("date").reset_index(drop=True)
@@ -386,8 +387,10 @@ def run_view_reports():
 
 def run_export_excel():
     """导出今日信号到 Excel 文件（Sheet1: 今日信号，Sheet2: 交易明细）。"""
-    from paper_trading.executor import get_current_signals
-    from data.loader import get_stock_name
+    from data.loader import load_all_stocks, get_stock_name
+    from features.builder import build_sequences
+    from models.lstm_model import load_model
+    from models.trainer import predict_proba
     from config import MODEL_SAVE_DIR, REPORTS_DIR, BUY_THRESHOLD, SELL_THRESHOLD
 
     model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
@@ -395,10 +398,29 @@ def run_export_excel():
         print("\n  模型文件不存在，请先训练模型\n")
         return
 
-    print("\n  正在获取今日信号...")
-    signals = get_current_signals()
+    print("\n  正在加载股票数据（快速模式）...")
+    stock_data = load_all_stocks(quick=True)
+    if not stock_data:
+        print("  未能加载任何股票数据，请检查网络连接\n")
+        return
+
+    print(f"  已加载 {len(stock_data)} 只股票，正在推理信号...")
+    model = load_model(model_path)
+    signals = {}
+    for code, df in stock_data.items():
+        if df is None or len(df) < 35:
+            continue
+        try:
+            X, _, _, _ = build_sequences(df)
+            if len(X) == 0:
+                continue
+            probs = predict_proba(model, X[-1:])
+            signals[code] = float(probs[0])
+        except Exception:
+            pass
+
     if not signals:
-        print("  未获取到信号，请先运行模拟盘或训练模型\n")
+        print("  未获取到有效信号\n")
         return
 
     from datetime import datetime
@@ -528,7 +550,7 @@ def interactive_menu():
         except Exception as e:
             logger.error(f"执行失败: {e}")
 
-        if choice not in ("4", "5", "8"):   # 这些选项操作完直接回菜单，不需要暂停
+        if choice not in ("5", "8"):   # 这些选项操作完直接回菜单，不需要暂停
             _pause()
 
 

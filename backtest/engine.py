@@ -208,6 +208,10 @@ class BacktestEngine:
             all_dates.update(df["date"].tolist())
         all_dates = sorted(all_dates)
 
+        if not all_dates:
+            print("\n  ⚠ 无有效股票数据，无法执行回测。请检查网络连接后重试。\n")
+            return {}
+
         logger.info(f"回测区间: {all_dates[0].date()} ~ {all_dates[-1].date()}，共 {len(all_dates)} 个交易日")
 
         for date in all_dates:
