@@ -66,7 +66,8 @@ def _print_menu():
     _box_sep()
     _box_line("  【工具】")
     _box_line("  7  个股诊断")
-    _box_line("  8  重置虚拟账户")
+    _box_line("  8  查看训练/回测报告图表")
+    _box_line("  9  重置虚拟账户")
     _box_line()
     _box_line("  0  退出")
     _box_bot()
@@ -184,6 +185,45 @@ def run_diagnose(stock_input: str = None, cost: float = None):
         print_batch_summary(results)
 
 
+def run_view_reports():
+    """列出并用系统默认程序打开已生成的报告图表。"""
+    from config import REPORTS_DIR
+    import glob
+
+    pngs = sorted(glob.glob(os.path.join(REPORTS_DIR, "*.png")))
+    if not pngs:
+        print("\n  暂无报告文件，请先运行训练或回测\n")
+        return
+
+    print("\n  已生成的报告文件：")
+    for i, p in enumerate(pngs, 1):
+        size_kb = os.path.getsize(p) // 1024
+        print(f"  {i}. {os.path.basename(p)}  ({size_kb} KB)  {p}")
+
+    choice = _ask(f"\n  输入编号打开（1-{len(pngs)}），直接回车全部打开", "all")
+    import subprocess, sys as _sys
+
+    def _open(path):
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            elif _sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+            print(f"  已打开: {os.path.basename(path)}")
+        except Exception as e:
+            print(f"  无法自动打开，请手动查看: {path}")
+
+    if choice == "all":
+        for p in pngs:
+            _open(p)
+    elif choice.isdigit() and 1 <= int(choice) <= len(pngs):
+        _open(pngs[int(choice) - 1])
+    else:
+        print("  无效输入")
+
+
 def run_reset():
     import json
     from config import LOGS_DIR, INIT_CAPITAL
@@ -229,7 +269,8 @@ def interactive_menu():
         "5": run_dashboard,
         "6": run_signal,
         "7": run_diagnose,
-        "8": run_reset,
+        "8": run_view_reports,
+        "9": run_reset,
     }
 
     while True:
@@ -253,7 +294,7 @@ def interactive_menu():
         except Exception as e:
             logger.error(f"执行失败: {e}")
 
-        if choice not in ("4", "5"):   # 这两个是阻塞服务，退出后直接回菜单
+        if choice not in ("4", "5", "8"):   # 这些选项操作完直接回菜单，不需要暂停
             _pause()
 
 

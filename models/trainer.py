@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     BATCH_SIZE, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR_PATIENCE,
-    LEARNING_RATE, TRAIN_RATIO, MODEL_SAVE_DIR,
+    LEARNING_RATE, TRAIN_RATIO, MODEL_SAVE_DIR, REPORTS_DIR,
 )
 from models.lstm_model import LSTMModel
 
@@ -61,7 +61,10 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
 
     best_val_auc = 0.0
     best_state   = None
+    best_epoch   = 1
     no_improve   = 0
+
+    history = {"loss": [], "train_auc": [], "val_auc": []}
 
     for epoch in range(1, MAX_EPOCHS + 1):
         model.train()
@@ -102,20 +105,30 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
             val_auc = 0.5
 
         scheduler.step(val_auc)
+        history["loss"].append(avg_loss)
+        history["train_auc"].append(train_auc)
+        history["val_auc"].append(val_auc)
 
-        msg = (f"Epoch {epoch:3d} | Loss: {avg_loss:.4f} | "
-               f"Train AUC: {train_auc:.4f} | Val AUC: {val_auc:.4f}")
+        # 用中文解释进度，方便小白理解
+        trend = "↑ 提升" if val_auc > best_val_auc else ("→ 持平" if no_improve < 3 else "↓ 停滞")
+        msg = (
+            f"第{epoch:3d}轮 | "
+            f"损失(越低越好): {avg_loss:.4f} | "
+            f"训练识别率: {train_auc:.4f} | "
+            f"验证识别率: {val_auc:.4f} {trend}"
+        )
         logger.info(msg)
         print(msg)
 
         if val_auc > best_val_auc + 1e-4:
             best_val_auc = val_auc
+            best_epoch   = epoch
             best_state   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             no_improve   = 0
         else:
             no_improve += 1
             if no_improve >= EARLY_STOP_PATIENCE:
-                logger.info(f"早停：{EARLY_STOP_PATIENCE} 轮无提升，最佳 Val AUC: {best_val_auc:.4f}")
+                logger.info(f"早停：{EARLY_STOP_PATIENCE} 轮无提升，最佳验证识别率: {best_val_auc:.4f}")
                 break
 
     if best_state is not None:
@@ -133,7 +146,84 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
     shutil.copy2(save_path, versioned_path)
     logger.info(f"版本副本已保存: {versioned_path}")
 
+    # 生成训练可视化报告
+    chart_path = _save_training_chart(history, best_epoch, best_val_auc)
+    if chart_path:
+        logger.info(f"训练报告已保存: {chart_path}")
+        print(f"\n  📊 训练报告已保存至: {chart_path}")
+
     return model
+
+
+def _save_training_chart(history: dict, best_epoch: int, best_val_auc: float) -> str:
+    """
+    保存训练曲线图（Loss曲线 + AUC曲线），帮助直观评估模型学习情况。
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
+
+        # 自动检测中文字体
+        candidates = [
+            "Microsoft YaHei", "SimHei", "SimSun",
+            "Heiti SC", "PingFang SC", "STHeiti",
+            "WenQuanYi Micro Hei", "Noto Sans CJK SC",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        for name in candidates:
+            if name in available:
+                plt.rcParams["font.family"] = name
+                break
+        plt.rcParams["axes.unicode_minus"] = False
+
+        epochs     = list(range(1, len(history["loss"]) + 1))
+        losses     = history["loss"]
+        train_aucs = history["train_auc"]
+        val_aucs   = history["val_auc"]
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+
+        # ── 损失曲线 ──
+        ax1.plot(epochs, losses, color="#2196F3", linewidth=1.8, label="训练损失")
+        ax1.axvline(best_epoch, color="#F44336", linestyle="--", alpha=0.8,
+                    label=f"最佳轮次 {best_epoch}")
+        ax1.set_title("训练损失曲线（越低模型越收敛）", fontsize=12)
+        ax1.set_xlabel("训练轮次 (Epoch)")
+        ax1.set_ylabel("损失值 (Loss)")
+        ax1.legend()
+        ax1.grid(alpha=0.3)
+
+        # ── AUC曲线 ──
+        ax2.plot(epochs, train_aucs, color="#2196F3", linewidth=1.8, label="训练识别率")
+        ax2.plot(epochs, val_aucs,   color="#4CAF50", linewidth=1.8, label="验证识别率")
+        ax2.axvline(best_epoch, color="#F44336", linestyle="--", alpha=0.8,
+                    label=f"最佳轮次 {best_epoch}")
+        ax2.axhline(0.5, color="gray", linestyle=":", alpha=0.6, label="随机猜测基准 0.5")
+        ax2.fill_between(epochs, 0.5, val_aucs,
+                         where=[v > 0.5 for v in val_aucs],
+                         alpha=0.12, color="#4CAF50", label="优于随机区域")
+        ax2.set_ylim(0.3, 1.0)
+        ax2.set_title("识别率曲线 AUC（越高模型越准确）", fontsize=12)
+        ax2.set_xlabel("训练轮次 (Epoch)")
+        ax2.set_ylabel("AUC（0.5=瞎猜，1.0=完美）")
+        ax2.legend(fontsize=8)
+        ax2.grid(alpha=0.3)
+
+        fig.suptitle(
+            f"AlphaQuant 模型训练报告 — 最佳验证识别率: {best_val_auc:.4f}",
+            fontsize=14, fontweight="bold"
+        )
+        plt.tight_layout()
+
+        path = os.path.join(REPORTS_DIR, "training_report.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return path
+    except Exception as e:
+        logger.warning(f"训练图表生成失败: {e}")
+        return ""
 
 
 def predict_proba(model: LSTMModel, X: np.ndarray, device: str = "cpu") -> np.ndarray:

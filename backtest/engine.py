@@ -280,29 +280,137 @@ class BacktestEngine:
         return metrics
 
     def _save_report(self, nav_df: pd.DataFrame, metrics: dict, bm_nav: pd.Series = None):
-        """保存净值曲线图和绩效报告。"""
-        fig, ax = plt.subplots(figsize=(14, 6))
-        ax.plot(nav_df["date"], nav_df["nav"] / INIT_CAPITAL,
-                linewidth=1.5, label="AlphaQuant", color="#2196F3")
+        """保存综合回测图表（净值曲线 + 回撤 + 月度收益 + 交易盈亏分布）。"""
+        fig = plt.figure(figsize=(16, 12))
+        fig.suptitle("AlphaQuant 回测综合报告", fontsize=16, fontweight="bold")
+
+        gs = fig.add_gridspec(3, 2, hspace=0.42, wspace=0.32)
+        ax_nav  = fig.add_subplot(gs[0, :])   # 顶部跨全宽：净值曲线
+        ax_dd   = fig.add_subplot(gs[1, 0])   # 中左：回撤曲线
+        ax_mon  = fig.add_subplot(gs[1, 1])   # 中右：月度收益
+        ax_pnl  = fig.add_subplot(gs[2, 0])   # 底左：盈亏分布
+        ax_stat = fig.add_subplot(gs[2, 1])   # 底右：绩效指标文字
+
+        nav_series = nav_df.set_index("date")["nav"]
+
+        # ── 净值曲线 ──────────────────────────────────
+        ax_nav.plot(nav_df["date"], nav_series / INIT_CAPITAL,
+                    linewidth=1.8, label="AlphaQuant", color="#2196F3")
         if bm_nav is not None:
-            ax.plot(nav_df["date"], bm_nav / INIT_CAPITAL,
-                    linewidth=1.2, label="沪深300", color="#FF9800", linestyle="--", alpha=0.8)
-        ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
-        ax.set_title("AlphaQuant 回测净值曲线", fontsize=14)
-        ax.set_ylabel("净值")
-        ax.set_xlabel("日期")
-        ax.legend()
-        ax.grid(alpha=0.3)
-        plt.tight_layout()
+            ax_nav.plot(nav_df["date"], bm_nav / INIT_CAPITAL,
+                        linewidth=1.2, label="沪深300基准", color="#FF9800",
+                        linestyle="--", alpha=0.8)
+        ax_nav.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
+        ax_nav.set_title("净值曲线（初始=1.0）")
+        ax_nav.set_ylabel("净值")
+        ax_nav.legend()
+        ax_nav.grid(alpha=0.3)
 
-        path = os.path.join(REPORTS_DIR, "backtest_nav.png")
-        fig.savefig(path, dpi=150)
-        plt.close(fig)
-        logger.info(f"报告已保存: {path}")
+        # ── 回撤曲线 ──────────────────────────────────
+        roll_max = nav_series.cummax()
+        drawdown = (nav_series - roll_max) / roll_max * 100
+        ax_dd.fill_between(nav_df["date"], drawdown, 0,
+                           color="#F44336", alpha=0.4, label="回撤%")
+        ax_dd.plot(nav_df["date"], drawdown, color="#F44336", linewidth=0.8)
+        ax_dd.set_title("回撤曲线（0%=历史最高点）")
+        ax_dd.set_ylabel("回撤 (%)")
+        ax_dd.grid(alpha=0.3)
 
-        print("\n" + "=" * 52)
-        print("  AlphaQuant 回测绩效报告")
-        print("=" * 52)
+        # ── 月度收益柱状图 ─────────────────────────────
+        monthly = nav_series.resample("ME").last().pct_change().dropna() * 100
+        if not monthly.empty:
+            colors = ["#4CAF50" if v >= 0 else "#F44336" for v in monthly.values]
+            ax_mon.bar(range(len(monthly)), monthly.values, color=colors, width=0.7)
+            ax_mon.axhline(0, color="gray", linestyle="-", linewidth=0.8)
+            ax_mon.set_xticks(range(len(monthly)))
+            labels = [d.strftime("%y/%m") for d in monthly.index]
+            ax_mon.set_xticklabels(labels, rotation=60, fontsize=7)
+            ax_mon.set_title("月度收益（绿涨红跌）")
+            ax_mon.set_ylabel("月收益 (%)")
+            ax_mon.grid(alpha=0.3, axis="y")
+        else:
+            ax_mon.text(0.5, 0.5, "数据不足", ha="center", va="center",
+                        transform=ax_mon.transAxes)
+            ax_mon.set_title("月度收益")
+
+        # ── 交易盈亏分布直方图 ──────────────────────────
+        if self.trades:
+            from collections import defaultdict, deque
+            buy_q: dict = defaultdict(deque)
+            pnls = []
+            for t in self.trades:
+                if t.get("action") == "buy":
+                    buy_q[t["code"]].append(float(t["price"]))
+                elif t.get("action") == "sell":
+                    q = buy_q.get(t["code"])
+                    if q:
+                        bp = q.popleft()
+                        pnl_pct = (float(t["price"]) - bp) / bp * 100
+                        pnls.append(pnl_pct)
+            if pnls:
+                wins  = [p for p in pnls if p >= 0]
+                loses = [p for p in pnls if p < 0]
+                bins  = np.linspace(min(pnls) - 1, max(pnls) + 1, 30)
+                ax_pnl.hist(loses, bins=bins, color="#F44336", alpha=0.7, label=f"亏损 {len(loses)}笔")
+                ax_pnl.hist(wins,  bins=bins, color="#4CAF50", alpha=0.7, label=f"盈利 {len(wins)}笔")
+                ax_pnl.axvline(0, color="gray", linestyle="--")
+                ax_pnl.set_title(f"交易盈亏分布（共{len(pnls)}笔，胜率{len(wins)/len(pnls)*100:.1f}%）")
+                ax_pnl.set_xlabel("单笔盈亏 (%)")
+                ax_pnl.set_ylabel("笔数")
+                ax_pnl.legend()
+                ax_pnl.grid(alpha=0.3, axis="y")
+            else:
+                ax_pnl.text(0.5, 0.5, "无完整交易记录", ha="center", va="center",
+                            transform=ax_pnl.transAxes)
+                ax_pnl.set_title("交易盈亏分布")
+        else:
+            ax_pnl.text(0.5, 0.5, "无交易记录\n请检查模型训练质量", ha="center", va="center",
+                        transform=ax_pnl.transAxes, fontsize=11, color="#F44336")
+            ax_pnl.set_title("交易盈亏分布")
+
+        # ── 绩效指标文字 ───────────────────────────────
+        ax_stat.axis("off")
+        lines = ["绩效指标汇总", "─" * 26]
+        label_map = {
+            "总收益率": "总收益率",
+            "年化收益率": "年化收益率",
+            "夏普比率": "夏普比率（>1佳）",
+            "最大回撤": "最大回撤（越小越好）",
+            "胜率": "胜率",
+            "交易次数": "成交笔数",
+            "Calmar比率": "Calmar比率",
+        }
         for k, v in metrics.items():
-            print(f"  {k:<16} {v}")
-        print("=" * 52)
+            label = label_map.get(k, k)
+            lines.append(f"{label:<18} {v}")
+        text = "\n".join(lines)
+        ax_stat.text(0.05, 0.95, text, transform=ax_stat.transAxes,
+                     fontsize=10, verticalalignment="top", family="monospace",
+                     bbox=dict(boxstyle="round", facecolor="#F5F5F5", alpha=0.8))
+        ax_stat.set_title("绩效汇总")
+
+        path = os.path.join(REPORTS_DIR, "backtest_report.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"回测报告已保存: {path}")
+        print(f"\n  📊 回测图表已保存至: {path}")
+
+        print("\n" + "=" * 54)
+        print("  AlphaQuant 回测绩效报告")
+        print("=" * 54)
+        descs = {
+            "总收益率":   "整个回测期间的总盈亏",
+            "年化收益率":  "折算成每年的平均收益",
+            "夏普比率":   "收益风险比（>1为佳）",
+            "Sortino比率": "只考虑下跌风险的收益比",
+            "Calmar比率":  "年化收益/最大回撤之比",
+            "最大回撤":   "从最高点到最低点的最大跌幅",
+            "胜率":       "盈利交易占总交易的比例",
+            "交易次数":   "完整买卖交易的总笔数",
+            "超额收益":   "相对沪深300基准的超额收益",
+            "最终资产":   "回测结束时的账户总价值",
+        }
+        for k, v in metrics.items():
+            desc = descs.get(k, "")
+            print(f"  {k:<12} {str(v):<18}  {desc}")
+        print("=" * 54)
