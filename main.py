@@ -77,6 +77,7 @@ def _print_menu():
     _box_line("  8  个股诊断")
     _box_line("  9  单股买卖点图（K线 + 模型信号）")
     _box_line("  v  查看训练/回测报告图表")
+    _box_line("  e  导出今日信号到 Excel")
     _box_line("  r  重置虚拟账户")
     _box_line()
     _box_line("  0  退出")
@@ -391,6 +392,77 @@ def run_view_reports():
         print("  无效输入")
 
 
+def run_export_excel():
+    """导出今日信号到 Excel 文件（Sheet1: 今日信号，Sheet2: 交易明细）。"""
+    from paper_trading.executor import get_current_signals
+    from data.loader import get_stock_name
+    from config import MODEL_SAVE_DIR, REPORTS_DIR, BUY_THRESHOLD, SELL_THRESHOLD
+
+    model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
+    if not os.path.exists(model_path):
+        print("\n  模型文件不存在，请先训练模型\n")
+        return
+
+    print("\n  正在获取今日信号...")
+    signals = get_current_signals()
+    if not signals:
+        print("  未获取到信号，请先运行模拟盘或训练模型\n")
+        return
+
+    from datetime import datetime
+    today = datetime.today().strftime("%Y%m%d")
+    out_path = os.path.join(REPORTS_DIR, f"signals_{today}.xlsx")
+
+    rows = []
+    for code, prob in sorted(signals.items(), key=lambda x: -x[1]):
+        name = get_stock_name(code)
+        if prob >= BUY_THRESHOLD:
+            suggestion = "买入"
+        elif prob <= SELL_THRESHOLD:
+            suggestion = "卖出"
+        else:
+            suggestion = "持仓"
+        rows.append({"代码": code, "名称": name, "买入概率": round(prob, 4),
+                     "建议": suggestion, "日期": today})
+
+    try:
+        from openpyxl import Workbook
+        wb = Workbook()
+
+        # Sheet 1: 今日信号
+        ws1 = wb.active
+        ws1.title = "今日信号"
+        headers1 = ["代码", "名称", "买入概率", "建议", "日期"]
+        ws1.append(headers1)
+        for row in rows:
+            ws1.append([row[h] for h in headers1])
+
+        # Sheet 2: 交易明细
+        ws2 = wb.create_sheet("交易明细")
+        trade_log = os.path.join(REPORTS_DIR, "trade_log.csv")
+        if os.path.exists(trade_log):
+            import csv
+            with open(trade_log, newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                for line in reader:
+                    ws2.append(line)
+        else:
+            ws2.append(["暂无交易记录"])
+
+        wb.save(out_path)
+        print(f"\n  已保存到: {out_path}\n")
+
+    except ImportError:
+        # fallback to CSV
+        import csv
+        csv_path = out_path.replace(".xlsx", ".csv")
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=["代码", "名称", "买入概率", "建议", "日期"])
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"\n  openpyxl 未安装，已保存为 CSV: {csv_path}\n")
+
+
 def run_reset():
     import json
     from config import LOGS_DIR, INIT_CAPITAL
@@ -439,6 +511,7 @@ def interactive_menu():
         "8": run_diagnose,
         "9": run_single_backtest,
         "v": run_view_reports,
+        "e": run_export_excel,
         "r": run_reset,
     }
 
