@@ -69,10 +69,17 @@ COMMISSION_BUY     = 0.0003      # 买入手续费
 COMMISSION_SELL    = 0.0013      # 卖出手续费（含印花税）
 RISK_FREE_RATE     = 0.03        # 无风险利率
 
-BUY_THRESHOLD      = 0.65        # 买入概率阈值
-SELL_THRESHOLD     = 0.35        # 卖出概率阈值
+BUY_THRESHOLD      = 0.65        # 买入概率阈值（绝对模式）
+SELL_THRESHOLD     = 0.35        # 卖出概率阈值（绝对模式）
 MAX_POSITION_RATIO = 0.20        # 单股最大仓位
 MAX_HOLDINGS       = 5           # 最大持仓数量
+
+# ── 相对排名交易模式 ─────────────────────────────────
+# True = 每天按概率排名，买前 TOP_N 只（无论绝对概率高低）
+# False = 传统绝对阈值模式（需要模型训练充分才有交易）
+RELATIVE_RANK_MODE  = True
+TOP_N_BUY           = 3          # 每日最多买入候选数（实际受 MAX_HOLDINGS 限制）
+RANK_SELL_BOTTOM    = 0.40       # 相对模式下：概率低于此值触发卖出
 STOP_LOSS_RATIO    = -0.07       # 单股止损
 PORTFOLIO_STOP     = -0.12       # 组合止损
 SUSPEND_DAYS       = 3           # 触发组合止损后暂停天数

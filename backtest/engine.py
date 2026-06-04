@@ -35,6 +35,7 @@ from config import (
     INIT_CAPITAL, COMMISSION_BUY, COMMISSION_SELL,
     WINDOW_SIZE, BUY_THRESHOLD, SELL_THRESHOLD,
     STOP_LOSS_RATIO, MAX_POSITION_RATIO, MAX_HOLDINGS,
+    RELATIVE_RANK_MODE, TOP_N_BUY, RANK_SELL_BOTTOM,
     REPORTS_DIR,
 )
 from models.lstm_model import LSTMModel
@@ -63,11 +64,15 @@ class BacktestEngine:
     """
 
     def __init__(self, stock_data: dict, model: LSTMModel, scaler: MinMaxScaler,
-                 benchmark_df: pd.DataFrame = None):
-        self.stock_data   = stock_data
-        self.model        = model
-        self.scaler       = scaler
-        self.benchmark_df = benchmark_df  # 沪深300日线数据（可选）
+                 benchmarks: dict = None):
+        """
+        Args:
+            benchmarks: {"上证指数": DataFrame(date,close), "沪深300": ..., ...}
+        """
+        self.stock_data = stock_data
+        self.model      = model
+        self.scaler     = scaler
+        self.benchmarks = benchmarks or {}   # 多基准字典
         self.cash         = float(INIT_CAPITAL)
         self.holdings     = {}
         self.today_bought = set()
@@ -233,7 +238,8 @@ class BacktestEngine:
 
             total_value = self._portfolio_value(date)
 
-            # 单股止损（T+1保护）
+            # ── 卖出判断 ────────────────────────────────
+            # 单股止损（T+1保护，两种模式均执行）
             for code in list(self.holdings.keys()):
                 if code in self.today_bought:
                     continue
@@ -244,43 +250,79 @@ class BacktestEngine:
                 if pnl < STOP_LOSS_RATIO:
                     self._sell(code, price, date, reason="stop_loss")
 
-            # 卖出信号
-            for code in list(self.holdings.keys()):
-                if code in self.today_bought:
-                    continue
-                if signals.get(code, 0.5) < SELL_THRESHOLD:
-                    price = self._get_close(code, date)
-                    if price > 0:
-                        self._sell(code, price, date, reason="signal")
+            if RELATIVE_RANK_MODE:
+                # 相对排名模式：持仓中排名垫底（低于 RANK_SELL_BOTTOM）的卖出
+                sorted_codes = sorted(signals.keys(), key=lambda c: signals[c])
+                n = len(sorted_codes)
+                for i, code in enumerate(sorted_codes):
+                    if code not in self.holdings or code in self.today_bought:
+                        continue
+                    # 该股票在当日排名处于后 RANK_SELL_BOTTOM 分位
+                    if (i / max(n, 1)) < RANK_SELL_BOTTOM:
+                        price = self._get_close(code, date)
+                        if price > 0:
+                            self._sell(code, price, date, reason="rank_signal")
+            else:
+                # 绝对阈值模式
+                for code in list(self.holdings.keys()):
+                    if code in self.today_bought:
+                        continue
+                    if signals.get(code, 0.5) < SELL_THRESHOLD:
+                        price = self._get_close(code, date)
+                        if price > 0:
+                            self._sell(code, price, date, reason="signal")
 
-            # 买入信号（按概率降序，优先买最强信号）
-            for code, prob in sorted(signals.items(), key=lambda x: -x[1]):
-                if len(self.holdings) >= MAX_HOLDINGS:
-                    break
-                if code in self.holdings:
-                    continue
-                if prob > BUY_THRESHOLD:
+            # ── 买入判断 ────────────────────────────────
+            ranked = sorted(signals.items(), key=lambda x: -x[1])
+
+            if RELATIVE_RANK_MODE:
+                # 相对排名模式：每天买概率最高的前 TOP_N_BUY 只
+                candidates = [
+                    (code, prob) for code, prob in ranked
+                    if code not in self.holdings and code not in self.today_bought
+                ][:TOP_N_BUY]
+                for code, prob in candidates:
+                    if len(self.holdings) >= MAX_HOLDINGS:
+                        break
                     price = self._get_close(code, date)
                     if price > 0:
                         self._buy(code, price, date, total_value)
+            else:
+                # 绝对阈值模式
+                for code, prob in ranked:
+                    if len(self.holdings) >= MAX_HOLDINGS:
+                        break
+                    if code in self.holdings:
+                        continue
+                    if prob > BUY_THRESHOLD:
+                        price = self._get_close(code, date)
+                        if price > 0:
+                            self._buy(code, price, date, total_value)
 
             self.nav_curve.append((date, self._portfolio_value(date)))
 
         nav_df = pd.DataFrame(self.nav_curve, columns=["date", "nav"])
 
-        # 准备基准净值（沪深300）
-        bm_nav = None
-        if self.benchmark_df is not None and not self.benchmark_df.empty:
-            bm = self.benchmark_df.set_index("date")["close"].reindex(nav_df["date"])
-            bm = bm.ffill().bfill()
-            bm_nav = (bm / bm.iloc[0]) * INIT_CAPITAL
+        # 将各基准指数对齐到回测日期，统一归一化为净值曲线
+        bm_navs = {}
+        for name, df in self.benchmarks.items():
+            if df.empty:
+                continue
+            s = df.set_index("date")["close"].reindex(nav_df["date"]).ffill().bfill()
+            if s.notna().any() and s.iloc[0] > 0:
+                bm_navs[name] = (s / s.iloc[0]) * INIT_CAPITAL
 
-        metrics = compute_metrics(nav_df, self.trades, benchmark_nav=bm_nav)
-        self._save_report(nav_df, metrics, bm_nav)
+        # 取沪深300（如有）作为夏普/超额收益计算基准
+        hs300_nav = bm_navs.get("沪深300")
+
+        metrics = compute_metrics(nav_df, self.trades, benchmark_nav=hs300_nav)
+        self._save_report(nav_df, metrics, bm_navs)
         return metrics
 
-    def _save_report(self, nav_df: pd.DataFrame, metrics: dict, bm_nav: pd.Series = None):
-        """保存综合回测图表（净值曲线 + 回撤 + 月度收益 + 交易盈亏分布）。"""
+    def _save_report(self, nav_df: pd.DataFrame, metrics: dict, bm_navs: dict = None):
+        """保存综合回测图表（净值曲线对比5指数 + 回撤 + 月度收益 + 交易盈亏分布）。"""
+        bm_navs = bm_navs or {}
+
         fig = plt.figure(figsize=(16, 12))
         fig.suptitle("AlphaQuant 回测综合报告", fontsize=16, fontweight="bold")
 
@@ -293,17 +335,28 @@ class BacktestEngine:
 
         nav_series = nav_df.set_index("date")["nav"]
 
-        # ── 净值曲线 ──────────────────────────────────
+        # ── 净值曲线（AlphaQuant + 5个基准指数）────────
         ax_nav.plot(nav_df["date"], nav_series / INIT_CAPITAL,
-                    linewidth=1.8, label="AlphaQuant", color="#2196F3")
-        if bm_nav is not None:
+                    linewidth=2.2, label="AlphaQuant", color="#2196F3", zorder=5)
+
+        # 各基准用不同颜色和线型
+        bm_colors = {
+            "上证指数": ("#FF5722", "--"),
+            "深证成指": ("#9C27B0", "-."),
+            "创业板指": ("#009688", ":"),
+            "沪深300":  ("#FF9800", "--"),
+            "上证50":   ("#795548", "-."),
+        }
+        for name, bm_nav in bm_navs.items():
+            color, ls = bm_colors.get(name, ("#888888", "--"))
             ax_nav.plot(nav_df["date"], bm_nav / INIT_CAPITAL,
-                        linewidth=1.2, label="沪深300基准", color="#FF9800",
-                        linestyle="--", alpha=0.8)
-        ax_nav.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
-        ax_nav.set_title("净值曲线（初始=1.0）")
+                        linewidth=1.2, label=name, color=color,
+                        linestyle=ls, alpha=0.75)
+
+        ax_nav.axhline(1.0, color="gray", linestyle=":", alpha=0.4)
+        ax_nav.set_title("净值曲线对比（初始=1.0，蓝色=AlphaQuant）")
         ax_nav.set_ylabel("净值")
-        ax_nav.legend()
+        ax_nav.legend(ncol=3, fontsize=9)
         ax_nav.grid(alpha=0.3)
 
         # ── 回撤曲线 ──────────────────────────────────

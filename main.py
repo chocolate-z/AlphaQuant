@@ -109,18 +109,32 @@ def run_backtest():
     from features.builder import load_scaler
     from models.lstm_model import load_model
     from backtest.engine import BacktestEngine
-    from config import MODEL_SAVE_DIR
+    from data.index_fetcher import fetch_all_benchmarks
+    from config import MODEL_SAVE_DIR, START_DATE, RELATIVE_RANK_MODE
 
     model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
     if not os.path.exists(model_path):
         logger.error("模型文件不存在，请先训练模型（选项 1 或 2）")
         return
 
-    logger.info("=== 历史回测 ===")
+    mode_tag = "相对排名模式" if RELATIVE_RANK_MODE else "绝对阈值模式"
+    logger.info(f"=== 历史回测 [{mode_tag}] ===")
+
+    from datetime import datetime
+    end_str = datetime.today().strftime("%Y%m%d")
+    start_str = START_DATE.replace("-", "")
+
+    logger.info("正在拉取5个基准指数历史数据...")
+    benchmarks = fetch_all_benchmarks(start_str, end_str)
+    if benchmarks:
+        logger.info(f"成功加载基准指数: {list(benchmarks.keys())}")
+    else:
+        logger.warning("基准指数拉取失败，将跳过对比图")
+
     stock_data = load_all_stocks()
     model      = load_model(model_path)
     scaler     = load_scaler()
-    BacktestEngine(stock_data, model, scaler).run()
+    BacktestEngine(stock_data, model, scaler, benchmarks=benchmarks).run()
     logger.info("回测完成")
 
 
