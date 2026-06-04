@@ -67,7 +67,8 @@ def _print_menu():
     _box_sep()
     _box_line("  【工具】")
     _box_line("  8  个股诊断")
-    _box_line("  9  查看训练/回测报告图表")
+    _box_line("  9  单股买卖点图（K线 + 模型信号）")
+    _box_line("  v  查看训练/回测报告图表")
     _box_line("  r  重置虚拟账户")
     _box_line()
     _box_line("  0  退出")
@@ -200,6 +201,137 @@ def run_diagnose(stock_input: str = None, cost: float = None):
         print_batch_summary(results)
 
 
+def run_single_backtest():
+    """单股回测：绘制K线图 + 模型买卖点标注。"""
+    from data.loader import load_stock_data, _fetch_kline, get_stock_name
+    from features.builder import build_sequences
+    from models.lstm_model import load_model
+    from models.trainer import predict_proba
+    from config import MODEL_SAVE_DIR, REPORTS_DIR, START_DATE, BUY_THRESHOLD, SELL_THRESHOLD
+
+    model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
+    if not os.path.exists(model_path):
+        print("\n  ⚠ 模型文件不存在，请先训练模型\n")
+        return
+
+    print()
+    code = _ask("输入股票代码（如 sh600519）").strip()
+    if not code:
+        return
+    years_str = _ask("回测多少年历史（默认 2）", "2")
+    try:
+        years = int(years_str)
+    except ValueError:
+        years = 2
+
+    from datetime import datetime, timedelta
+    end_str   = datetime.today().strftime("%Y%m%d")
+    start_str = (datetime.today() - timedelta(days=years * 365)).strftime("%Y%m%d")
+
+    print(f"\n  正在加载 {code} 数据...")
+    df = _fetch_kline(code, start_str, end_str)
+    if df is None or df.empty:
+        print(f"\n  ✗ 无法获取 {code} 的数据，请检查代码是否正确\n")
+        return
+
+    print(f"  获取到 {len(df)} 条，正在计算模型信号...")
+    try:
+        X, _, _, dates = build_sequences(df)
+    except Exception as e:
+        print(f"\n  ✗ 特征构建失败: {e}\n")
+        return
+
+    if len(X) == 0:
+        print("\n  ✗ 数据量不足以构建特征序列\n")
+        return
+
+    model = load_model(model_path)
+    probs = predict_proba(model, X)
+
+    # 对齐日期
+    import numpy as np
+    date_series = pd.to_datetime(dates)
+    prob_df = pd.DataFrame({"date": date_series, "prob": probs})
+    merged  = df.merge(prob_df, on="date", how="inner").sort_values("date").reset_index(drop=True)
+
+    buy_pts  = merged[merged["prob"] >= BUY_THRESHOLD]
+    sell_pts = merged[merged["prob"] <= SELL_THRESHOLD]
+
+    # ── 绘图 ──────────────────────────────────────────────────────────
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        import matplotlib.font_manager as fm
+
+        candidates = ["Microsoft YaHei", "SimHei", "Heiti SC",
+                      "WenQuanYi Micro Hei", "Noto Sans CJK SC"]
+        available  = {f.name for f in fm.fontManager.ttflist}
+        for name in candidates:
+            if name in available:
+                plt.rcParams["font.family"] = name
+                break
+        plt.rcParams["axes.unicode_minus"] = False
+
+        stock_name = get_stock_name(code)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 9),
+                                        gridspec_kw={"height_ratios": [3, 1]},
+                                        sharex=True)
+
+        # ── 收盘价走势 ──
+        ax1.plot(merged["date"], merged["close"], color="#455A64", linewidth=1.2, label="收盘价")
+        if not buy_pts.empty:
+            ax1.scatter(buy_pts["date"], buy_pts["close"],
+                        color="#E53935", marker="^", s=80, zorder=5, label=f"买入信号(≥{BUY_THRESHOLD})")
+        if not sell_pts.empty:
+            ax1.scatter(sell_pts["date"], sell_pts["close"],
+                        color="#1E88E5", marker="v", s=80, zorder=5, label=f"卖出信号(≤{SELL_THRESHOLD})")
+
+        ax1.set_title(f"{stock_name}（{code}）买卖点分析  |  共 {len(buy_pts)} 次买入信号，{len(sell_pts)} 次卖出信号",
+                      fontsize=13, fontweight="bold")
+        ax1.set_ylabel("价格（元）")
+        ax1.legend(loc="upper left", fontsize=9)
+        ax1.grid(alpha=0.25)
+
+        # ── 模型概率 ──
+        ax2.plot(merged["date"], merged["prob"], color="#7B1FA2", linewidth=1.0, label="买入概率")
+        ax2.axhline(BUY_THRESHOLD,  color="#E53935", linestyle="--", alpha=0.7, label=f"买入线 {BUY_THRESHOLD}")
+        ax2.axhline(SELL_THRESHOLD, color="#1E88E5", linestyle="--", alpha=0.7, label=f"卖出线 {SELL_THRESHOLD}")
+        ax2.fill_between(merged["date"], merged["prob"], BUY_THRESHOLD,
+                         where=merged["prob"] >= BUY_THRESHOLD, alpha=0.25, color="#E53935")
+        ax2.fill_between(merged["date"], merged["prob"], SELL_THRESHOLD,
+                         where=merged["prob"] <= SELL_THRESHOLD, alpha=0.25, color="#1E88E5")
+        ax2.set_ylim(0, 1)
+        ax2.set_ylabel("买入概率")
+        ax2.set_xlabel("日期")
+        ax2.legend(loc="upper left", fontsize=8)
+        ax2.grid(alpha=0.25)
+
+        plt.tight_layout()
+        out_path = os.path.join(REPORTS_DIR, f"signal_{code}.png")
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"\n  图表已保存: {out_path}")
+
+        # 尝试自动打开
+        import subprocess, sys as _sys
+        try:
+            if os.name == "nt":
+                os.startfile(out_path)
+            elif _sys.platform == "darwin":
+                subprocess.Popen(["open", out_path])
+            else:
+                subprocess.Popen(["xdg-open", out_path])
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.warning(f"绘图失败: {e}")
+
+    print()
+
+
 def run_view_reports():
     """列出并用系统默认程序打开已生成的报告图表。"""
     from config import REPORTS_DIR
@@ -285,7 +417,8 @@ def interactive_menu():
         "6": run_dashboard,
         "7": run_signal,
         "8": run_diagnose,
-        "9": run_view_reports,
+        "9": run_single_backtest,
+        "v": run_view_reports,
         "r": run_reset,
     }
 
