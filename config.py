@@ -40,13 +40,13 @@ STOCK_POOL = [
 ]
 
 # ── 股票抽样 ──────────────────────────────────────────
-FULL_STOCK_COUNT    = 50    # 完整模式：从全A股随机抽取数量
-QUICK_STOCK_COUNT   = 10    # 快速模式：随机抽取数量
-QUICK_HISTORY_YEARS = 2     # 快速模式：只拉取近 N 年数据
+FULL_STOCK_COUNT    = 100   # 完整模式：从全A股随机抽取数量
+QUICK_STOCK_COUNT   = 20    # 快速模式：随机抽取数量
+QUICK_HISTORY_YEARS = 3     # 快速模式：只拉取近 N 年数据
 STOCK_LIST_CACHE    = "stock_list.json"  # 全A股列表缓存文件名（存于 DATA_CACHE_DIR）
 
 # ── 数据 ─────────────────────────────────────────────
-START_DATE       = "20190101"
+START_DATE       = "20150101"
 END_DATE         = "today"        # 动态取今日
 WINDOW_SIZE      = 30             # 时间窗口（天）— 增加上下文
 FEATURE_DIM      = 16             # 特征维度（16个技术特征）
@@ -60,8 +60,8 @@ FC_HIDDEN            = 32
 DROPOUT              = 0.3
 LEARNING_RATE        = 5e-4       # 降低初始学习率，更稳定收敛
 BATCH_SIZE           = 128        # 更大batch，梯度更稳定
-MAX_EPOCHS           = 150        # 更多轮次
-EARLY_STOP_PATIENCE  = 20         # 更大耐心，避免过早停止
+MAX_EPOCHS           = 300        # 足够多轮次，靠早停控制
+EARLY_STOP_PATIENCE  = 30         # 更大耐心，避免过早停止
 LR_PATIENCE          = 7
 TRAIN_RATIO          = 0.8
 
