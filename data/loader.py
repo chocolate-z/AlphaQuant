@@ -42,12 +42,19 @@ def _sina_headers() -> dict:
     }
 
 def _sohu_headers() -> dict:
-    """每次请求随机换 UA，避免频率特征。"""
+    """模拟 Chrome/Edge 浏览器直接导航的完整请求头。"""
     return {
         "User-Agent": random.choice(_USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": "http://q.stock.sohu.com/",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://q.stock.sohu.com/",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
     }
 
 def _tencent_headers() -> dict:
@@ -71,7 +78,7 @@ def _fetch_from_sohu(stock_code: str, start: str, end: str) -> pd.DataFrame:
     """
     pure_code = stock_code[2:]
     url = (
-        f"http://q.stock.sohu.com/hisHq"
+        f"https://q.stock.sohu.com/hisHq"
         f"?code=cn_{pure_code}&start={start}&end={end}"
         f"&stat=1&order=D&period=d&callback=historySearchHandler&rt=jsonp"
     )
