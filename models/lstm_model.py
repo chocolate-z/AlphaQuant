@@ -42,6 +42,7 @@ class LSTMModel(nn.Module):
                              num_layers=1, batch_first=True)
         self.norm2    = nn.LayerNorm(hidden2)
         self.dropout2 = nn.Dropout(dropout)
+        self.hidden2  = hidden2
 
         self.fc1     = nn.Linear(hidden2, fc_hidden * 2)
         self.bn_fc1  = nn.BatchNorm1d(fc_hidden * 2)
@@ -66,7 +67,12 @@ class LSTMModel(nn.Module):
         out = self.norm2(out)
         out = self.dropout2(out)
 
-        out = out[:, -1, :]     # 取最后时间步
+        # Scaled dot-product self-attention: query=last step, keys/values=all steps
+        query = out[:, -1:, :]                                              # (B, 1, H)
+        scores = torch.bmm(query, out.transpose(1, 2)) / (self.hidden2 ** 0.5)  # (B, 1, T)
+        weights = torch.softmax(scores, dim=-1)
+        context = torch.bmm(weights, out).squeeze(1)                        # (B, H)
+        out = context
         out = self.fc1(out)
         out = self.bn_fc1(out)
         out = self.relu1(out)
