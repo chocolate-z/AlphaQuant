@@ -1,11 +1,13 @@
-# 数据加载模块：通过 AKShare 获取日K线历史数据，本地 CSV 缓存
+# 数据加载模块：搜狐前复权日K线 + 本地 CSV 缓存（无 AKShare 依赖）
 
 import os
+import re
+import json
 import time
 import logging
 from datetime import datetime, timedelta
 
-import akshare as ak
+import requests
 import pandas as pd
 
 import sys
@@ -14,71 +16,82 @@ from config import DATA_CACHE_DIR, START_DATE, STOCK_POOL
 
 logger = logging.getLogger(__name__)
 
+_SINA_HEADERS = {
+    "Referer": "http://finance.sina.com.cn/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
+_SOHU_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
+
 
 def _cache_path(stock_code: str) -> str:
     return os.path.join(DATA_CACHE_DIR, f"{stock_code}.csv")
 
 
-def _fetch_from_akshare(stock_code: str, start: str, end: str) -> pd.DataFrame:
-    """从 AKShare 获取前复权日K线，返回标准化 DataFrame。"""
+def _fetch_from_sohu(stock_code: str, start: str, end: str) -> pd.DataFrame:
+    """
+    从搜狐财经获取前复权日K线（境外可用）。
+    URL: http://q.stock.sohu.com/hisHq?code=cn_{code}&start=YYYYMMDD&end=YYYYMMDD
+         &stat=1&order=D&period=d&callback=historySearchHandler&rt=jsonp
+    响应字段: [日期, 开盘, 收盘, 涨跌额, 涨跌幅%, 最低, 最高, 成交量(手), 成交额(万元), 换手率%]
+    """
     pure_code = stock_code[2:]
+    sohu_code = f"cn_{pure_code}"
+    url = (
+        f"http://q.stock.sohu.com/hisHq"
+        f"?code={sohu_code}&start={start}&end={end}"
+        f"&stat=1&order=D&period=d&callback=historySearchHandler&rt=jsonp"
+    )
 
     try:
-        df = ak.stock_zh_a_hist(
-            symbol=pure_code,
-            period="daily",
-            start_date=start,
-            end_date=end,
-            adjust="qfq",
-        )
+        resp = requests.get(url, timeout=20, headers=_SOHU_HEADERS, allow_redirects=True)
+        resp.raise_for_status()
+        text = resp.text
+
+        m = re.search(r'historySearchHandler\((.*)\)', text, re.DOTALL)
+        if not m:
+            logger.warning(f"[{stock_code}] 搜狐响应解析失败（无 JSONP 包装）")
+            return pd.DataFrame()
+
+        data = json.loads(m.group(1))
+        if not data or data[0].get("status") != 0:
+            logger.warning(f"[{stock_code}] 搜狐返回 status 非 0")
+            return pd.DataFrame()
+
+        rows = data[0].get("hq", [])
+        if not rows:
+            return pd.DataFrame()
+
+        records = []
+        for row in rows:
+            try:
+                records.append({
+                    "date":            pd.Timestamp(row[0]),
+                    "open":            float(row[1]),
+                    "close":           float(row[2]),
+                    "high":            float(row[6]),
+                    "low":             float(row[5]),
+                    "volume":          float(row[7]) * 100,       # 手 → 股
+                    "amount":          float(row[8]) * 10000,     # 万元 → 元
+                    "pct_change":      float(str(row[4]).rstrip("%")),
+                    "turnover":        float(str(row[9]).rstrip("%")) if row[9] else 0.0,
+                    "volume_ratio":    1.0,
+                    "main_net_inflow": 0.0,
+                })
+            except (ValueError, IndexError):
+                continue
+
+        if not records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(records)
+        df = df.sort_values("date").reset_index(drop=True)
+        return df
+
     except Exception as e:
-        logger.warning(f"[{stock_code}] AKShare 拉取失败: {e}")
+        logger.warning(f"[{stock_code}] 搜狐拉取失败: {e}")
         return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    col_map = {
-        "日期": "date",
-        "开盘": "open",
-        "收盘": "close",
-        "最高": "high",
-        "最低": "low",
-        "成交量": "volume",
-        "成交额": "amount",
-        "涨跌幅": "pct_change",
-        "换手率": "turnover",
-    }
-    df = df.rename(columns=col_map)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-
-    # 补充量比和主力净流入（默认值）
-    if "volume_ratio" not in df.columns:
-        df["volume_ratio"] = 1.0
-    if "main_net_inflow" not in df.columns:
-        df["main_net_inflow"] = 0.0
-
-    df = _enrich_with_inflow(df, stock_code, pure_code)
-    return df
-
-
-def _enrich_with_inflow(df: pd.DataFrame, stock_code: str, pure_code: str) -> pd.DataFrame:
-    """补充主力净流入字段（尽力而为，失败静默）。"""
-    try:
-        market = "sh" if stock_code.startswith("sh") else "sz"
-        inflow_df = ak.stock_individual_fund_flow(stock=pure_code, market=market)
-        if inflow_df is not None and not inflow_df.empty:
-            col_map2 = {"日期": "date", "主力净流入净额": "main_net_inflow_new"}
-            inflow_df = inflow_df.rename(columns=col_map2)
-            inflow_df["date"] = pd.to_datetime(inflow_df["date"])
-            if "main_net_inflow_new" in inflow_df.columns:
-                df = df.merge(inflow_df[["date", "main_net_inflow_new"]], on="date", how="left")
-                df["main_net_inflow"] = df["main_net_inflow_new"].fillna(0.0)
-                df.drop(columns=["main_net_inflow_new"], inplace=True)
-    except Exception:
-        pass
-    return df
 
 
 def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFrame:
@@ -107,7 +120,7 @@ def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFram
 
         # 增量更新
         incremental_start = (last_date + timedelta(days=1)).strftime("%Y%m%d")
-        new_df = _fetch_from_akshare(stock_code, incremental_start, today_str)
+        new_df = _fetch_from_sohu(stock_code, incremental_start, today_str)
         if not new_df.empty:
             df = pd.concat([df, new_df], ignore_index=True)
             df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
@@ -117,10 +130,12 @@ def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFram
 
     # 全量拉取
     logger.info(f"[{stock_code}] 全量拉取数据...")
-    df = _fetch_from_akshare(stock_code, START_DATE, today_str)
+    df = _fetch_from_sohu(stock_code, START_DATE.replace("-", ""), today_str)
     if not df.empty:
         df.to_csv(cache_file, index=False)
         logger.info(f"[{stock_code}] 保存 {len(df)} 条到缓存")
+    else:
+        logger.warning(f"[{stock_code}] 数据为空，跳过")
     return df
 
 
@@ -140,21 +155,23 @@ def load_all_stocks(force_refresh: bool = False) -> dict:
                 logger.info(f"[{code}] 加载 {len(df)} 条")
             else:
                 logger.warning(f"[{code}] 数据为空，跳过")
-            time.sleep(0.3)  # 避免频率限制
+            time.sleep(0.2)
         except Exception as e:
             logger.error(f"[{code}] 加载失败: {e}")
     return result
 
 
 def get_stock_name(stock_code: str) -> str:
-    """获取股票名称（尽力而为）。"""
+    """通过新浪行情接口获取股票名称（字段[0]）。"""
     try:
-        pure_code = stock_code[2:]
-        info = ak.stock_individual_info_em(symbol=pure_code)
-        if info is not None and not info.empty:
-            row = info[info["item"] == "股票简称"]
-            if not row.empty:
-                return str(row["value"].iloc[0])
+        url = f"https://hq.sinajs.cn/list={stock_code}"
+        resp = requests.get(url, timeout=10, headers=_SINA_HEADERS)
+        text = resp.content.decode("gb18030", errors="replace")
+        m = re.search(r'"([^"]*)"', text)
+        if m:
+            fields = m.group(1).split(",")
+            if fields and fields[0].strip():
+                return fields[0].strip()
     except Exception:
         pass
     return stock_code

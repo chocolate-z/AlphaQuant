@@ -1,59 +1,94 @@
-# 实时/当日行情拉取：交易日收盘后自动追加到历史缓存
+# 实时/当日行情拉取：新浪 hq.sinajs.cn（GB18030，需 Referer）
 
 import os
+import re
 import logging
 from datetime import datetime, date
 
-import akshare as ak
+import requests
 import pandas as pd
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DATA_CACHE_DIR, STOCK_POOL
+from config import STOCK_POOL
 from data.loader import _cache_path
 
 logger = logging.getLogger(__name__)
 
+_SINA_HEADERS = {
+    "Referer": "http://finance.sina.com.cn/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
+
 
 def is_trade_day(check_date: date = None) -> bool:
     """
-    判断给定日期是否为交易日（排除周末和法定节假日）。
-
-    Args:
-        check_date: 待检查日期，默认今天
-
-    Returns:
-        True 表示是交易日
+    判断给定日期是否为交易日（排除周末）。
+    注：节假日接口 timor.tech 偶发 Cloudflare 挑战，降级为仅排除周末。
     """
     if check_date is None:
         check_date = date.today()
+    return check_date.weekday() < 5
 
-    if check_date.weekday() >= 5:
-        return False
+
+def _parse_sina_quote(code: str, text: str) -> dict:
+    """
+    解析新浪行情文本中单只股票的数据。
+    A股字段索引：[0]名称 [1]今开 [2]昨收 [3]现价 [4]最高 [5]最低 [8]成交量(股) [9]成交额(元)
+    """
+    result = {
+        "stock_code": code,
+        "date": datetime.today().date(),
+        "open": 0.0, "close": 0.0, "high": 0.0, "low": 0.0,
+        "volume": 0.0, "amount": 0.0, "pct_change": 0.0,
+        "turnover": 0.0, "volume_ratio": 1.0, "main_net_inflow": 0.0,
+    }
+
+    pattern = rf'hq_str_{re.escape(code)}="([^"]*)"'
+    m = re.search(pattern, text)
+    if not m:
+        return result
+
+    fields = m.group(1).split(",")
+    if len(fields) < 10:
+        return result
 
     try:
-        trade_cal = ak.tool_trade_date_hist_sina()
-        if trade_cal is not None and not trade_cal.empty:
-            trade_dates = pd.to_datetime(trade_cal.iloc[:, 0]).dt.date.tolist()
-            return check_date in trade_dates
-    except Exception:
+        open_  = float(fields[1])
+        prev   = float(fields[2])
+        close  = float(fields[3])
+        high   = float(fields[4])
+        low    = float(fields[5])
+        volume = float(fields[8])
+        amount = float(fields[9])
+
+        if close == 0 and fields[6]:
+            close = float(fields[6])  # 买一价兜底
+        if close == 0:
+            close = prev
+
+        pct = (close - prev) / prev * 100 if prev > 0 else 0.0
+
+        result.update({
+            "open": open_, "close": close, "high": high, "low": low,
+            "volume": volume, "amount": amount, "pct_change": round(pct, 2),
+        })
+    except (ValueError, ZeroDivisionError):
         pass
 
-    # 降级：只排除周末
-    return True
+    return result
 
 
 def fetch_realtime_quote(stock_code: str) -> dict:
     """
-    获取单只股票当日实时行情快照。
+    获取单只股票当日实时行情（新浪 hq.sinajs.cn）。
 
     Args:
         stock_code: 如 sh600519
 
     Returns:
-        包含 open/close/high/low/volume/amount/pct_change/turnover 的字典
+        包含 open/close/high/low/volume/amount/pct_change 的字典
     """
-    pure_code = stock_code[2:]
     result = {
         "stock_code": stock_code,
         "date": datetime.today().date(),
@@ -61,54 +96,46 @@ def fetch_realtime_quote(stock_code: str) -> dict:
         "volume": 0.0, "amount": 0.0, "pct_change": 0.0,
         "turnover": 0.0, "volume_ratio": 1.0, "main_net_inflow": 0.0,
     }
-
     try:
-        df = ak.stock_zh_a_spot_em()
-        if df is None or df.empty:
-            return result
-
-        col_map = {
-            "代码": "code", "最新价": "close", "涨跌幅": "pct_change",
-            "开盘价": "open", "最高价": "high", "最低价": "low",
-            "成交量": "volume", "成交额": "amount", "换手率": "turnover",
-            "量比": "volume_ratio",
-        }
-        df = df.rename(columns=col_map)
-        row = df[df["code"] == pure_code]
-        if row.empty:
-            return result
-
-        r = row.iloc[0]
-        for field in ["open", "close", "high", "low", "volume", "amount", "pct_change", "turnover", "volume_ratio"]:
-            if field in r.index:
-                try:
-                    result[field] = float(r[field])
-                except (ValueError, TypeError):
-                    pass
-
+        url = f"https://hq.sinajs.cn/list={stock_code}"
+        resp = requests.get(url, timeout=10, headers=_SINA_HEADERS)
+        text = resp.content.decode("gb18030", errors="replace")
+        result = _parse_sina_quote(stock_code, text)
     except Exception as e:
         logger.error(f"[{stock_code}] 实时行情获取失败: {e}")
-
     return result
 
 
 def fetch_all_realtime() -> dict:
-    """批量获取股票池所有股票当日实时行情。"""
+    """
+    批量获取股票池当日实时行情（单次请求多代码，每批 20 只）。
+    """
+    if not STOCK_POOL:
+        return {}
+
+    batch_size = 20
     results = {}
-    for code in STOCK_POOL:
-        q = fetch_realtime_quote(code)
-        if q.get("close", 0) > 0:
-            results[code] = q
+
+    for i in range(0, len(STOCK_POOL), batch_size):
+        batch = STOCK_POOL[i: i + batch_size]
+        codes_str = ",".join(batch)
+        try:
+            url = f"https://hq.sinajs.cn/list={codes_str}"
+            resp = requests.get(url, timeout=15, headers=_SINA_HEADERS)
+            text = resp.content.decode("gb18030", errors="replace")
+            for code in batch:
+                q = _parse_sina_quote(code, text)
+                if q.get("close", 0) > 0:
+                    results[code] = q
+        except Exception as e:
+            logger.error(f"批量行情请求失败 (batch {i//batch_size}): {e}")
+
     return results
 
 
 def append_today_to_cache(stock_code: str, quote: dict) -> bool:
     """
     将今日行情追加到历史缓存 CSV。
-
-    Args:
-        stock_code: 股票代码
-        quote: fetch_realtime_quote 返回的字典
 
     Returns:
         True 表示追加成功
