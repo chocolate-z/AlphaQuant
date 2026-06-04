@@ -32,11 +32,6 @@ _USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
 ]
 
-_SINA_HEADERS = {
-    "Referer": "http://finance.sina.com.cn/",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-}
-
 def _sina_headers() -> dict:
     return {
         "Referer": "http://finance.sina.com.cn/",
@@ -525,17 +520,24 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False,
     return result
 
 
+_name_cache: dict = {}
+
 def get_stock_name(stock_code: str) -> str:
     """通过新浪行情获取股票名称（字段[0]）。"""
+    if stock_code in _name_cache:
+        return _name_cache[stock_code]
     try:
         url  = f"https://hq.sinajs.cn/list={stock_code}"
-        resp = requests.get(url, timeout=10, headers=_SINA_HEADERS)
+        resp = requests.get(url, timeout=10, headers=_sina_headers())
         text = resp.content.decode("gb18030", errors="replace")
         m    = re.search(r'"([^"]*)"', text)
         if m:
             fields = m.group(1).split(",")
             if fields and fields[0].strip():
-                return fields[0].strip()
+                name = fields[0].strip()
+                _name_cache[stock_code] = name
+                return name
     except Exception:
         pass
+    _name_cache[stock_code] = stock_code
     return stock_code

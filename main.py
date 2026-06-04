@@ -284,16 +284,8 @@ def run_single_backtest():
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
-        import matplotlib.font_manager as fm
-
-        candidates = ["Microsoft YaHei", "SimHei", "Heiti SC",
-                      "WenQuanYi Micro Hei", "Noto Sans CJK SC"]
-        available  = {f.name for f in fm.fontManager.ttflist}
-        for name in candidates:
-            if name in available:
-                plt.rcParams["font.family"] = name
-                break
-        plt.rcParams["axes.unicode_minus"] = False
+        from utils.viz import setup_chinese_font
+        setup_chinese_font()
 
         stock_name = get_stock_name(code)
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 9),

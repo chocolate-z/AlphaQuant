@@ -124,7 +124,7 @@ def _window_zscore(window: np.ndarray) -> np.ndarray:
     return (window - mean) / std
 
 
-def build_sequences(df: pd.DataFrame, scaler=None, fit_scaler: bool = False):
+def build_sequences(df: pd.DataFrame, scaler=None, fit_scaler: bool = False):  # scaler/fit_scaler unused, kept for API compat
     """
     将特征 DataFrame 转换为 LSTM 输入序列和标签。
     全向量化实现（无 Python 循环），比逐窗口循环快 20~50x。
@@ -172,7 +172,7 @@ def build_sequences(df: pd.DataFrame, scaler=None, fit_scaler: bool = False):
     return X, y, None, dates
 
 
-def build_all_stocks(stock_data_dict: dict, fit_scaler: bool = True):
+def build_all_stocks(stock_data_dict: dict, fit_scaler: bool = True):  # fit_scaler unused, kept for API compat
     """
     对所有股票构建特征序列并合并。
     逐窗口归一化无需全局 scaler，fit_scaler 参数保留用于接口兼容。

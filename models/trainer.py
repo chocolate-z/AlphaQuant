@@ -196,20 +196,8 @@ def _save_training_chart(history: dict, best_epoch: int, best_val_auc: float) ->
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.font_manager as fm
-
-        # 自动检测中文字体
-        candidates = [
-            "Microsoft YaHei", "SimHei", "SimSun",
-            "Heiti SC", "PingFang SC", "STHeiti",
-            "WenQuanYi Micro Hei", "Noto Sans CJK SC",
-        ]
-        available = {f.name for f in fm.fontManager.ttflist}
-        for name in candidates:
-            if name in available:
-                plt.rcParams["font.family"] = name
-                break
-        plt.rcParams["axes.unicode_minus"] = False
+        from utils.viz import setup_chinese_font
+        setup_chinese_font()
 
         epochs     = list(range(1, len(history["loss"]) + 1))
         losses     = history["loss"]

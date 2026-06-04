@@ -47,7 +47,6 @@ STOCK_LIST_CACHE    = "stock_list.json"  # 全A股列表缓存文件名（存于
 
 # ── 数据 ─────────────────────────────────────────────
 START_DATE       = "20150101"
-END_DATE         = "today"        # 动态取今日
 WINDOW_SIZE      = 30             # 时间窗口（天）— 增加上下文
 FEATURE_DIM      = 16             # 特征维度（16个技术特征）
 LABEL_HORIZON    = 5              # 标签：未来N日

@@ -6,7 +6,7 @@ import json
 import logging
 from datetime import datetime
 
-from flask import Flask, render_template_string, request
+from flask import Flask, request
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

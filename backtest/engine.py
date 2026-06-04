@@ -8,29 +8,11 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as _fm
-
-def _setup_chinese_font():
-    """自动检测并设置中文字体（Windows/macOS/Linux 均适用）。"""
-    candidates = [
-        "Microsoft YaHei", "SimHei", "SimSun", "FangSong",   # Windows
-        "Heiti SC", "PingFang SC", "STHeiti", "STSong",       # macOS
-        "WenQuanYi Micro Hei", "Noto Sans CJK SC",            # Linux
-        "Arial Unicode MS",
-    ]
-    available = {f.name for f in _fm.fontManager.ttflist}
-    for name in candidates:
-        if name in available:
-            plt.rcParams["font.family"]       = name
-            plt.rcParams["axes.unicode_minus"] = False
-            return
-    # 找不到中文字体时改用英文标签（不报警告）
-    plt.rcParams["axes.unicode_minus"] = False
-
-_setup_chinese_font()
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.viz import setup_chinese_font
+setup_chinese_font()
 from config import (
     INIT_CAPITAL, COMMISSION_BUY, COMMISSION_SELL,
     WINDOW_SIZE, BUY_THRESHOLD, SELL_THRESHOLD,
@@ -40,7 +22,7 @@ from config import (
 )
 from models.lstm_model import LSTMModel
 from models.trainer import predict_proba
-from features.builder import build_sequences, compute_raw_features, FEATURE_NAMES
+from features.builder import build_sequences, FEATURE_NAMES
 from sklearn.preprocessing import MinMaxScaler
 
 logger = logging.getLogger(__name__)
