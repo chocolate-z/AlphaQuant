@@ -54,9 +54,10 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False)
 
     model     = LSTMModel().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=LR_PATIENCE, factor=0.5
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+    # 余弦退火：学习率从 LEARNING_RATE 平滑降到 1e-6，避免震荡不收敛
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=MAX_EPOCHS, eta_min=1e-6
     )
 
     best_val_auc = 0.0
@@ -104,7 +105,7 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
         except Exception:
             val_auc = 0.5
 
-        scheduler.step(val_auc)
+        scheduler.step()
         history["loss"].append(avg_loss)
         history["train_auc"].append(train_auc)
         history["val_auc"].append(val_auc)

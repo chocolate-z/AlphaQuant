@@ -45,9 +45,24 @@ def _fetch_from_sohu(stock_code: str, start: str, end: str) -> pd.DataFrame:
         f"&stat=1&order=D&period=d&callback=historySearchHandler&rt=jsonp"
     )
 
+    for attempt in range(4):
+        try:
+            resp = requests.get(url, timeout=20, headers=_SOHU_HEADERS, allow_redirects=True)
+            if resp.status_code == 503:
+                wait = 2 ** attempt
+                logger.warning(f"[{stock_code}] 503 限流，{wait}s 后重试（第{attempt+1}次）")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt == 3:
+                logger.warning(f"[{stock_code}] 搜狐拉取失败: {e}")
+                return pd.DataFrame()
+            time.sleep(2 ** attempt)
+    else:
+        return pd.DataFrame()
     try:
-        resp = requests.get(url, timeout=20, headers=_SOHU_HEADERS, allow_redirects=True)
-        resp.raise_for_status()
         text = resp.text
 
         m = re.search(r'historySearchHandler\((.*)\)', text, re.DOTALL)
@@ -91,7 +106,7 @@ def _fetch_from_sohu(stock_code: str, start: str, end: str) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        logger.warning(f"[{stock_code}] 搜狐拉取失败: {e}")
+        logger.warning(f"[{stock_code}] 搜狐解析失败: {e}")
         return pd.DataFrame()
 
 

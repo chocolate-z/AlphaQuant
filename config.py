@@ -46,8 +46,8 @@ QUICK_HISTORY_YEARS = 2     # 只拉取近 N 年数据
 # ── 数据 ─────────────────────────────────────────────
 START_DATE       = "20190101"
 END_DATE         = "today"        # 动态取今日
-WINDOW_SIZE      = 20             # 时间窗口（天）
-FEATURE_DIM      = 8              # 特征维度
+WINDOW_SIZE      = 30             # 时间窗口（天）— 增加上下文
+FEATURE_DIM      = 16             # 特征维度（16个技术特征）
 LABEL_HORIZON    = 5              # 标签：未来N日
 LABEL_THRESHOLD  = 0.05           # 标签阈值（5%）
 
@@ -56,11 +56,11 @@ LSTM_HIDDEN1         = 128
 LSTM_HIDDEN2         = 64
 FC_HIDDEN            = 32
 DROPOUT              = 0.3
-LEARNING_RATE        = 1e-3
-BATCH_SIZE           = 64
-MAX_EPOCHS           = 100
-EARLY_STOP_PATIENCE  = 15
-LR_PATIENCE          = 5
+LEARNING_RATE        = 5e-4       # 降低初始学习率，更稳定收敛
+BATCH_SIZE           = 128        # 更大batch，梯度更稳定
+MAX_EPOCHS           = 150        # 更多轮次
+EARLY_STOP_PATIENCE  = 20         # 更大耐心，避免过早停止
+LR_PATIENCE          = 7
 TRAIN_RATIO          = 0.8
 
 # ── 回测 & 模拟盘 ────────────────────────────────────
