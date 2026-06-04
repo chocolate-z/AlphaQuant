@@ -19,13 +19,14 @@ from models.lstm_model import LSTMModel
 logger = logging.getLogger(__name__)
 
 
-def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
+def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel:
     """
     训练 LSTM 模型（时序分割，禁止随机打乱）。
 
     Args:
-        X: (N, 20, 8) 特征序列
+        X: (N, WINDOW_SIZE, FEATURE_DIM) 特征序列
         y: (N,) 二分类标签
+        resume: True = 加载已有模型权重后继续训练（增量训练）
 
     Returns:
         训练好的 LSTMModel（已保存到 models/saved/）
@@ -53,7 +54,17 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
     train_ds     = TensorDataset(X_tr, y_tr)
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False)
 
-    model     = LSTMModel().to(device)
+    model = LSTMModel().to(device)
+    pretrained_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
+    if resume and os.path.exists(pretrained_path):
+        model.load_state_dict(torch.load(pretrained_path, map_location=device))
+        msg = f"已加载已有模型权重（{pretrained_path}），在此基础上继续训练"
+        logger.info(msg)
+        print(f"\n  ✔ {msg}\n")
+    elif resume:
+        logger.warning("未找到已有模型文件，将从头开始训练")
+        print("\n  ⚠ 未找到已有模型文件，将从头开始训练\n")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     # 余弦退火：学习率从 LEARNING_RATE 平滑降到 1e-6，避免震荡不收敛
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

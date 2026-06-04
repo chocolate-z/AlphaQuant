@@ -317,7 +317,52 @@ class BacktestEngine:
 
         metrics = compute_metrics(nav_df, self.trades, benchmark_nav=hs300_nav)
         self._save_report(nav_df, metrics, bm_navs)
+        self._save_trade_log()
         return metrics
+
+    def _save_trade_log(self):
+        """打印交易明细到终端，并保存 CSV 到 reports/trade_log.csv。"""
+        if not self.trades:
+            print("\n  回测期间无任何交易记录\n")
+            return
+
+        df = pd.DataFrame(self.trades)
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        df["action_cn"] = df["action"].map({"buy": "买入", "sell": "卖出"})
+        df["commission"] = df["commission"].round(2)
+
+        # 计算每笔卖出盈亏（匹配最近一次买入）
+        pnl_map = {}
+        for _, row in df.iterrows():
+            code = row["code"]
+            if row["action"] == "buy":
+                pnl_map[code] = row["price"]
+            elif row["action"] == "sell" and code in pnl_map:
+                buy_p = pnl_map.pop(code)
+                idx = df[(df["code"] == code) & (df["action"] == "sell") &
+                         (df["date"] == row["date"])].index
+                df.loc[idx, "pnl_pct"] = (row["price"] / buy_p - 1) * 100
+
+        # 终端输出
+        print("\n" + "=" * 72)
+        print(f"  {'日期':<12} {'代码':<10} {'操作':<4} {'价格':>8} {'股数':>8} {'手续费':>8} {'涨跌%':>7} {'原因'}")
+        print("-" * 72)
+        for _, r in df.iterrows():
+            reason = r.get("reason", "") or ""
+            pnl    = r.get("pnl_pct", float("nan"))
+            pnl_str = f"{pnl:+.2f}%" if not pd.isna(pnl) else "  —  "
+            print(f"  {r['date']:<12} {r['code']:<10} {r['action_cn']:<4} "
+                  f"{r['price']:>8.2f} {int(r['shares']):>8} {r['commission']:>8.2f} "
+                  f"{pnl_str:>7} {reason}")
+        print("=" * 72)
+        print(f"  共 {len(df)} 笔交易（买入 {(df['action']=='buy').sum()} 笔，"
+              f"卖出 {(df['action']=='sell').sum()} 笔）")
+        print()
+
+        # 保存 CSV
+        csv_path = os.path.join(REPORTS_DIR, "trade_log.csv")
+        df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+        print(f"  交易明细已保存至: {csv_path}\n")
 
     def _save_report(self, nav_df: pd.DataFrame, metrics: dict, bm_navs: dict = None):
         """保存综合回测图表（净值曲线对比5指数 + 回撤 + 月度收益 + 交易盈亏分布）。"""

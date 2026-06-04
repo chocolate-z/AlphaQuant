@@ -57,17 +57,18 @@ def _print_menu():
     _box_line("  【训练 & 回测】")
     _box_line("  1  训练模型（完整模式，全部股票）")
     _box_line("  2  训练模型（快速模式，随机10只/近2年）")
-    _box_line("  3  历史回测")
+    _box_line("  3  继续训练（在已有模型基础上增量学习）")
+    _box_line("  4  历史回测")
     _box_sep()
     _box_line("  【实盘 & 看板】")
-    _box_line("  4  启动模拟盘调度器")
-    _box_line("  5  启动网页看板")
-    _box_line("  6  查看今日信号排行")
+    _box_line("  5  启动模拟盘调度器")
+    _box_line("  6  启动网页看板")
+    _box_line("  7  查看今日信号排行")
     _box_sep()
     _box_line("  【工具】")
-    _box_line("  7  个股诊断")
-    _box_line("  8  查看训练/回测报告图表")
-    _box_line("  9  重置虚拟账户")
+    _box_line("  8  个股诊断")
+    _box_line("  9  查看训练/回测报告图表")
+    _box_line("  r  重置虚拟账户")
     _box_line()
     _box_line("  0  退出")
     _box_bot()
@@ -76,12 +77,12 @@ def _print_menu():
 
 # ── 各功能 ───────────────────────────────────────────────────────────
 
-def run_train(quick: bool = False, force_refresh: bool = False):
+def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = False):
     from data.loader import load_all_stocks
     from features.builder import build_all_stocks
     from models.trainer import train_model
 
-    mode_tag = "快速模式" if quick else "完整模式"
+    mode_tag = "快速模式" if quick else ("增量训练" if resume else "完整模式")
     logger.info(f"=== 训练模型 [{mode_tag}] ===")
 
     logger.info("正在下载/加载数据...")
@@ -100,7 +101,7 @@ def run_train(quick: bool = False, force_refresh: bool = False):
 
     logger.info(f"特征维度: {X.shape}，正样本比例: {y.mean():.3f}")
     logger.info("开始训练...")
-    train_model(X, y)
+    train_model(X, y, resume=resume)
     logger.info("训练完成！")
 
 
@@ -278,13 +279,14 @@ def interactive_menu():
     handlers = {
         "1": lambda: run_train(quick=False, force_refresh=_confirm("是否强制重新下载数据")),
         "2": lambda: (_clear(), print("\n  快速模式：随机抽取 10 只股票，近 2 年历史\n"), run_train(quick=True)),
-        "3": run_backtest,
-        "4": run_paper,
-        "5": run_dashboard,
-        "6": run_signal,
-        "7": run_diagnose,
-        "8": run_view_reports,
-        "9": run_reset,
+        "3": lambda: (_clear(), print("\n  增量训练：加载已有模型，在原基础上继续学习\n"), run_train(resume=True)),
+        "4": run_backtest,
+        "5": run_paper,
+        "6": run_dashboard,
+        "7": run_signal,
+        "8": run_diagnose,
+        "9": run_view_reports,
+        "r": run_reset,
     }
 
     while True:
