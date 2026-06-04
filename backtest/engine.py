@@ -8,6 +8,26 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as _fm
+
+def _setup_chinese_font():
+    """自动检测并设置中文字体（Windows/macOS/Linux 均适用）。"""
+    candidates = [
+        "Microsoft YaHei", "SimHei", "SimSun", "FangSong",   # Windows
+        "Heiti SC", "PingFang SC", "STHeiti", "STSong",       # macOS
+        "WenQuanYi Micro Hei", "Noto Sans CJK SC",            # Linux
+        "Arial Unicode MS",
+    ]
+    available = {f.name for f in _fm.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            plt.rcParams["font.family"]       = name
+            plt.rcParams["axes.unicode_minus"] = False
+            return
+    # 找不到中文字体时改用英文标签（不报警告）
+    plt.rcParams["axes.unicode_minus"] = False
+
+_setup_chinese_font()
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -166,6 +186,24 @@ class BacktestEngine:
                 logger.warning(f"[{code}] 预计算失败: {e}")
 
         logger.info(f"信号预计算完成：{len(signal_table)} 条（{len(self.stock_data)} 只股票）")
+
+        # 概率分布诊断（帮助判断阈值是否合理）
+        if signal_table:
+            all_probs = list(signal_table.values())
+            p_arr = np.array(all_probs)
+            above_buy  = (p_arr > BUY_THRESHOLD).sum()
+            above_half = (p_arr > 0.5).sum()
+            logger.info(
+                f"概率分布 — min={p_arr.min():.3f}  mean={p_arr.mean():.3f}  "
+                f"max={p_arr.max():.3f}  >0.5: {above_half}条  >{BUY_THRESHOLD}: {above_buy}条"
+            )
+            if above_buy == 0:
+                logger.warning(
+                    f"⚠️  没有任何信号超过买入阈值 {BUY_THRESHOLD}，将产生 0 笔交易。"
+                    f"建议：① 重新训练模型（更多数据/更多轮次）"
+                    f"② 或在 config.py 中适当降低 BUY_THRESHOLD（当前 {BUY_THRESHOLD}）"
+                )
+
         return signal_table
 
     # ── 主回测循环 ────────────────────────────────────
