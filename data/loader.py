@@ -10,9 +10,10 @@ from datetime import datetime, timedelta
 import requests
 import pandas as pd
 
+import random
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import DATA_CACHE_DIR, START_DATE, STOCK_POOL
+from config import DATA_CACHE_DIR, START_DATE, STOCK_POOL, QUICK_STOCK_COUNT, QUICK_HISTORY_YEARS
 
 logger = logging.getLogger(__name__)
 
@@ -139,22 +140,46 @@ def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFram
     return df
 
 
-def load_all_stocks(force_refresh: bool = False) -> dict:
+def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
     """
-    批量加载股票池所有股票数据。
+    批量加载股票数据。
+
+    Args:
+        force_refresh: 强制重新从网络拉取
+        quick: 快速模式 — 随机抽 QUICK_STOCK_COUNT 只股票，只取近 QUICK_HISTORY_YEARS 年数据
 
     Returns:
         {stock_code: DataFrame}
     """
+    pool = list(STOCK_POOL)
+    start = START_DATE
+
+    if quick:
+        count = min(QUICK_STOCK_COUNT, len(pool))
+        pool  = random.sample(pool, count)
+        cutoff = datetime.today() - timedelta(days=QUICK_HISTORY_YEARS * 365)
+        start  = cutoff.strftime("%Y%m%d")
+        logger.info(f"[快速模式] 随机选取 {count} 只股票，起始日期 {start}")
+        logger.info(f"[快速模式] 股票列表: {pool}")
+
     result = {}
-    for code in STOCK_POOL:
+    for code in pool:
         try:
-            df = load_stock_data(code, force_refresh=force_refresh)
-            if not df.empty:
-                result[code] = df
-                logger.info(f"[{code}] 加载 {len(df)} 条")
+            if quick:
+                # 快速模式直接拉取，不读旧缓存（避免旧缓存日期范围不匹配）
+                df = _fetch_from_sohu(code, start, datetime.today().strftime("%Y%m%d"))
+                if not df.empty:
+                    result[code] = df
+                    logger.info(f"[{code}] 加载 {len(df)} 条")
+                else:
+                    logger.warning(f"[{code}] 数据为空，跳过")
             else:
-                logger.warning(f"[{code}] 数据为空，跳过")
+                df = load_stock_data(code, force_refresh=force_refresh)
+                if not df.empty:
+                    result[code] = df
+                    logger.info(f"[{code}] 加载 {len(df)} 条")
+                else:
+                    logger.warning(f"[{code}] 数据为空，跳过")
             time.sleep(0.2)
         except Exception as e:
             logger.error(f"[{code}] 加载失败: {e}")
