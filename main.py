@@ -5,11 +5,19 @@ import logging
 import sys
 import os
 
+from config import LOGS_DIR as _LOGS_DIR
+_log_file = os.path.join(_LOGS_DIR, "alphaquant.log")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[
+        logging.FileHandler(_log_file, encoding="utf-8"),  # 详细日志写文件
+        logging.StreamHandler(),                            # 终端只显示 WARNING+
+    ],
 )
+# 终端只显示 WARNING 及以上，避免刷屏；详细 INFO 看 logs/alphaquant.log
+logging.getLogger().handlers[1].setLevel(logging.WARNING)
 logger = logging.getLogger("main")
 
 # ── 菜单工具 ─────────────────────────────────────────────────────────

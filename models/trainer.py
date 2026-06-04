@@ -140,7 +140,9 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
         else:
             no_improve += 1
             if no_improve >= EARLY_STOP_PATIENCE:
-                logger.info(f"早停：{EARLY_STOP_PATIENCE} 轮无提升，最佳验证识别率: {best_val_auc:.4f}")
+                msg = f"早停：{EARLY_STOP_PATIENCE} 轮无提升，最佳验证识别率: {best_val_auc:.4f}"
+                logger.info(msg)
+                print(f"\n  ⏹ {msg}")
                 break
 
     if best_state is not None:

@@ -460,8 +460,8 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
     total  = len(pool)
     for idx, code in enumerate(pool, 1):
         name = get_stock_name(code)
+        print(f"  [{idx:>3}/{total}] {code}  {name:<8} 拉取中...", flush=True)
         logger.info(f"正在加载 ({idx}/{total}): {code} {name}")
-        print(f"  ({idx}/{total}) {code}  {name} ...", end="\r", flush=True)
         try:
             if quick:
                 df = _fetch_kline(code, start, today_str)
@@ -470,11 +470,11 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
 
             if not df.empty:
                 result[code] = df
+                print(f"  [{idx:>3}/{total}] {code}  {name:<8} ✓ {len(df)} 条")
                 logger.info(f"[{code}] {name} ✓ {len(df)} 条")
-                print(f"  ({idx}/{total}) {code}  {name}  ✓ {len(df)} 条")
             else:
+                print(f"  [{idx:>3}/{total}] {code}  {name:<8} ✗ 无数据")
                 logger.warning(f"[{code}] {name} ✗ 三个源均无数据")
-                print(f"  ({idx}/{total}) {code}  {name}  ✗ 无数据")
         except Exception as e:
             logger.error(f"[{code}] 加载异常: {e}")
 
