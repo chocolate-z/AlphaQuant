@@ -1,4 +1,4 @@
-# 历史回测引擎：T+1、手续费、止损、资金管理
+# 历史回测引擎：预计算信号、T+1、手续费、涨跌停、止损、基准对比
 
 import os
 import logging
@@ -19,45 +19,90 @@ from config import (
 )
 from models.lstm_model import LSTMModel
 from models.trainer import predict_proba
-from features.builder import build_inference_sequence
+from features.builder import build_sequences, compute_raw_features, FEATURE_NAMES
 from sklearn.preprocessing import MinMaxScaler
 
 logger = logging.getLogger(__name__)
 
+# 科创板(688xxx)和创业板(sz3xxxx)涨跌停幅度 20%，其余 10%
+def _price_limit(code: str) -> float:
+    pure = code[2:]
+    if pure.startswith("688") or (code.startswith("sz") and pure.startswith("3")):
+        return 0.20
+    return 0.10
+
 
 class BacktestEngine:
     """
-    历史回测引擎：严格T+1、手续费、单股止损。
+    历史回测引擎。
 
-    初始资金 100万，买入0.03%/卖出0.13% 手续费。
+    改进：
+    - 预计算所有信号（O(S*N) 而非 O(S*D*N)），速度提升 ~100x
+    - 处理涨跌停（涨停无法买入，跌停无法卖出）
+    - 支持沪深300基准对比
     """
 
-    def __init__(self, stock_data: dict, model: LSTMModel, scaler: MinMaxScaler):
-        self.stock_data = stock_data
-        self.model      = model
-        self.scaler     = scaler
-        self.cash       = float(INIT_CAPITAL)
-        self.holdings   = {}      # {code: {shares, cost, buy_date}}
+    def __init__(self, stock_data: dict, model: LSTMModel, scaler: MinMaxScaler,
+                 benchmark_df: pd.DataFrame = None):
+        self.stock_data   = stock_data
+        self.model        = model
+        self.scaler       = scaler
+        self.benchmark_df = benchmark_df  # 沪深300日线数据（可选）
+        self.cash         = float(INIT_CAPITAL)
+        self.holdings     = {}
         self.today_bought = set()
-        self.nav_curve  = []
-        self.trades     = []
+        self.nav_curve    = []
+        self.trades       = []
 
-    def _get_price(self, code: str, date: pd.Timestamp) -> float:
-        df  = self.stock_data.get(code)
+    # ── 价格查询（带索引缓存）──────────────────────────
+
+    def _build_price_index(self):
+        """构建 {code: {date: {close, open, pct_change}}} 索引，避免重复过滤。"""
+        self._price_idx = {}
+        for code, df in self.stock_data.items():
+            self._price_idx[code] = df.set_index("date").to_dict("index")
+
+    def _get_close(self, code: str, date: pd.Timestamp) -> float:
+        return self._price_idx.get(code, {}).get(date, {}).get("close", 0.0)
+
+    def _get_prev_close(self, code: str, date: pd.Timestamp) -> float:
+        """获取前一交易日收盘价（用于涨跌停判断）。"""
+        df = self.stock_data.get(code)
         if df is None:
             return 0.0
-        row = df[df["date"] == date]
-        return float(row["close"].iloc[0]) if not row.empty else 0.0
+        idx = df[df["date"] == date].index
+        if len(idx) == 0 or idx[0] == 0:
+            return 0.0
+        return float(df.iloc[idx[0] - 1]["close"])
+
+    def _is_limit_up(self, code: str, date: pd.Timestamp) -> bool:
+        close      = self._get_close(code, date)
+        prev_close = self._get_prev_close(code, date)
+        if close <= 0 or prev_close <= 0:
+            return False
+        return (close - prev_close) / prev_close >= _price_limit(code) * 0.98
+
+    def _is_limit_down(self, code: str, date: pd.Timestamp) -> bool:
+        close      = self._get_close(code, date)
+        prev_close = self._get_prev_close(code, date)
+        if close <= 0 or prev_close <= 0:
+            return False
+        return (close - prev_close) / prev_close <= -_price_limit(code) * 0.98
 
     def _portfolio_value(self, date: pd.Timestamp) -> float:
         total = self.cash
         for code, pos in self.holdings.items():
-            price = self._get_price(code, date)
+            price = self._get_close(code, date)
             if price > 0:
                 total += pos["shares"] * price
         return total
 
+    # ── 交易执行 ──────────────────────────────────────
+
     def _buy(self, code: str, price: float, date: pd.Timestamp, total_value: float):
+        if self._is_limit_up(code, date):
+            logger.debug(f"[{code}] 涨停，无法买入")
+            return
         max_amount = total_value * MAX_POSITION_RATIO
         shares     = int(max_amount / price / 100) * 100
         if shares <= 0:
@@ -68,7 +113,6 @@ class BacktestEngine:
             cost   = shares * price * (1 + COMMISSION_BUY)
         if shares <= 0:
             return
-
         self.cash -= cost
         self.holdings[code] = {"shares": shares, "cost": price, "buy_date": date}
         self.today_bought.add(code)
@@ -81,6 +125,9 @@ class BacktestEngine:
     def _sell(self, code: str, price: float, date: pd.Timestamp, reason: str = "signal"):
         if code not in self.holdings:
             return
+        if self._is_limit_down(code, date):
+            logger.debug(f"[{code}] 跌停，无法卖出（{reason}）")
+            return
         shares   = self.holdings[code]["shares"]
         proceeds = shares * price * (1 - COMMISSION_SELL)
         self.cash += proceeds
@@ -92,40 +139,67 @@ class BacktestEngine:
         })
         del self.holdings[code]
 
+    # ── 信号预计算（核心优化）──────────────────────────
+
+    def _precompute_signals(self) -> dict:
+        """
+        一次性预计算所有股票所有日期的信号。
+        复杂度从 O(S*D*N) 降至 O(S*N)，速度提升约100x。
+
+        Returns:
+            {(code, date): probability}
+        """
+        from sklearn.preprocessing import MinMaxScaler as _MMS
+        signal_table = {}
+
+        for code, df in self.stock_data.items():
+            if len(df) < WINDOW_SIZE + 5:
+                continue
+            try:
+                X, _, _, dates = build_sequences(df, scaler=self.scaler, fit_scaler=False)
+                if len(X) == 0:
+                    continue
+                probs = predict_proba(self.model, X)
+                for d, p in zip(dates, probs):
+                    signal_table[(code, pd.Timestamp(d))] = float(p)
+            except Exception as e:
+                logger.warning(f"[{code}] 预计算失败: {e}")
+
+        logger.info(f"信号预计算完成：{len(signal_table)} 条（{len(self.stock_data)} 只股票）")
+        return signal_table
+
+    # ── 主回测循环 ────────────────────────────────────
+
     def run(self) -> dict:
         """执行完整回测，返回绩效指标字典。"""
         from backtest.metrics import compute_metrics
+
+        self._build_price_index()
+        logger.info("正在预计算所有信号（可能需要1-2分钟）...")
+        signal_table = self._precompute_signals()
 
         all_dates = set()
         for df in self.stock_data.values():
             all_dates.update(df["date"].tolist())
         all_dates = sorted(all_dates)
 
-        logger.info(f"回测区间: {all_dates[0].date()} ~ {all_dates[-1].date()}")
+        logger.info(f"回测区间: {all_dates[0].date()} ~ {all_dates[-1].date()}，共 {len(all_dates)} 个交易日")
 
         for date in all_dates:
             self.today_bought = set()
 
-            # 构建当日信号
-            signals = {}
-            for code, df in self.stock_data.items():
-                sub = df[df["date"] <= date]
-                if len(sub) < WINDOW_SIZE + 1:
-                    continue
-                try:
-                    X    = build_inference_sequence(sub, self.scaler)
-                    prob = float(predict_proba(self.model, X)[0])
-                    signals[code] = prob
-                except Exception:
-                    pass
+            signals = {
+                code: signal_table.get((code, date), 0.5)
+                for code in self.stock_data
+            }
 
             total_value = self._portfolio_value(date)
 
-            # 单股止损（T+1：今日买入不卖）
+            # 单股止损（T+1保护）
             for code in list(self.holdings.keys()):
                 if code in self.today_bought:
                     continue
-                price = self._get_price(code, date)
+                price = self._get_close(code, date)
                 if price <= 0:
                     continue
                 pnl = (price - self.holdings[code]["cost"]) / self.holdings[code]["cost"]
@@ -137,34 +211,46 @@ class BacktestEngine:
                 if code in self.today_bought:
                     continue
                 if signals.get(code, 0.5) < SELL_THRESHOLD:
-                    price = self._get_price(code, date)
+                    price = self._get_close(code, date)
                     if price > 0:
                         self._sell(code, price, date, reason="signal")
 
-            # 买入信号
+            # 买入信号（按概率降序，优先买最强信号）
             for code, prob in sorted(signals.items(), key=lambda x: -x[1]):
                 if len(self.holdings) >= MAX_HOLDINGS:
                     break
                 if code in self.holdings:
                     continue
                 if prob > BUY_THRESHOLD:
-                    price = self._get_price(code, date)
+                    price = self._get_close(code, date)
                     if price > 0:
                         self._buy(code, price, date, total_value)
 
             self.nav_curve.append((date, self._portfolio_value(date)))
 
-        nav_df  = pd.DataFrame(self.nav_curve, columns=["date", "nav"])
-        metrics = compute_metrics(nav_df, self.trades)
-        self._save_report(nav_df, metrics)
+        nav_df = pd.DataFrame(self.nav_curve, columns=["date", "nav"])
+
+        # 准备基准净值（沪深300）
+        bm_nav = None
+        if self.benchmark_df is not None and not self.benchmark_df.empty:
+            bm = self.benchmark_df.set_index("date")["close"].reindex(nav_df["date"])
+            bm = bm.ffill().bfill()
+            bm_nav = (bm / bm.iloc[0]) * INIT_CAPITAL
+
+        metrics = compute_metrics(nav_df, self.trades, benchmark_nav=bm_nav)
+        self._save_report(nav_df, metrics, bm_nav)
         return metrics
 
-    def _save_report(self, nav_df: pd.DataFrame, metrics: dict):
-        """保存净值曲线图。"""
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(nav_df["date"], nav_df["nav"] / INIT_CAPITAL, linewidth=1.5, label="AlphaQuant")
-        ax.axhline(1.0, color="gray", linestyle="--", alpha=0.5, label="基准线")
-        ax.set_title("AlphaQuant 回测净值曲线")
+    def _save_report(self, nav_df: pd.DataFrame, metrics: dict, bm_nav: pd.Series = None):
+        """保存净值曲线图和绩效报告。"""
+        fig, ax = plt.subplots(figsize=(14, 6))
+        ax.plot(nav_df["date"], nav_df["nav"] / INIT_CAPITAL,
+                linewidth=1.5, label="AlphaQuant", color="#2196F3")
+        if bm_nav is not None:
+            ax.plot(nav_df["date"], bm_nav / INIT_CAPITAL,
+                    linewidth=1.2, label="沪深300", color="#FF9800", linestyle="--", alpha=0.8)
+        ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
+        ax.set_title("AlphaQuant 回测净值曲线", fontsize=14)
         ax.set_ylabel("净值")
         ax.set_xlabel("日期")
         ax.legend()
@@ -176,9 +262,9 @@ class BacktestEngine:
         plt.close(fig)
         logger.info(f"报告已保存: {path}")
 
-        print("\n" + "=" * 50)
+        print("\n" + "=" * 52)
         print("  AlphaQuant 回测绩效报告")
-        print("=" * 50)
+        print("=" * 52)
         for k, v in metrics.items():
             print(f"  {k:<16} {v}")
-        print("=" * 50)
+        print("=" * 52)

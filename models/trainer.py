@@ -125,6 +125,14 @@ def train_model(X: np.ndarray, y: np.ndarray) -> LSTMModel:
     torch.save(model.state_dict(), save_path)
     logger.info(f"模型已保存: {save_path}，最佳 Val AUC: {best_val_auc:.4f}")
 
+    # 同时保存带时间戳的版本，避免覆盖历史最优模型
+    import shutil
+    from datetime import datetime as _dt
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    versioned_path = os.path.join(MODEL_SAVE_DIR, f"lstm_{ts}_auc{best_val_auc:.4f}.pt")
+    shutil.copy2(save_path, versioned_path)
+    logger.info(f"版本副本已保存: {versioned_path}")
+
     return model
 
 

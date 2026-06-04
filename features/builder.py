@@ -9,7 +9,7 @@ import joblib
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import WINDOW_SIZE, LABEL_HORIZON, LABEL_THRESHOLD, MODEL_SAVE_DIR
+from config import WINDOW_SIZE, LABEL_HORIZON, LABEL_THRESHOLD, MODEL_SAVE_DIR, TRAIN_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -123,27 +123,80 @@ def build_sequences(df: pd.DataFrame, scaler: MinMaxScaler = None, fit_scaler: b
 def build_all_stocks(stock_data_dict: dict, fit_scaler: bool = True):
     """
     对所有股票构建特征序列并合并。
+    两阶段流程确保 scaler 只在训练集上 fit，消除 look-ahead bias。
 
     Args:
         stock_data_dict: {stock_code: DataFrame}
-        fit_scaler: 首次训练时为 True
+        fit_scaler: True 时重新 fit scaler（训练阶段）
 
     Returns:
         X, y, scaler
     """
-    all_X, all_y = [], []
-    scaler = None
+    # ── 阶段1：计算原始特征，收集训练期数据用于 scaler fitting ──
+    stock_processed = {}   # {code: (feat_array, df_feat)}
+    all_train_feats = []
 
     for code, df in stock_data_dict.items():
         if len(df) < WINDOW_SIZE + LABEL_HORIZON + 10:
             logger.warning(f"[{code}] 数据太少（{len(df)}行），跳过")
             continue
         try:
-            X, y, scaler, _ = build_sequences(df, scaler=scaler, fit_scaler=(scaler is None and fit_scaler))
-            all_X.append(X)
-            all_y.append(y)
+            df_feat  = compute_raw_features(df)
+            available = [c for c in FEATURE_NAMES if c in df_feat.columns]
+            feat = df_feat[available].values.astype(np.float32)
+            feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
+            stock_processed[code] = (feat, df_feat)
+            if fit_scaler:
+                # 只取训练期部分用于 fit
+                split = int(len(feat) * TRAIN_RATIO)
+                if split > 0:
+                    all_train_feats.append(feat[:split])
         except Exception as e:
-            logger.error(f"[{code}] 特征构建失败: {e}")
+            logger.error(f"[{code}] 特征计算失败: {e}")
+
+    if not stock_processed:
+        return np.array([]), np.array([]), None
+
+    # ── 阶段2：仅在训练数据上 fit scaler ──
+    if fit_scaler and all_train_feats:
+        scaler = MinMaxScaler()
+        scaler.fit(np.concatenate(all_train_feats, axis=0))
+        logger.info(f"Scaler 已基于 {sum(len(f) for f in all_train_feats)} 个训练样本 fit")
+    else:
+        try:
+            scaler = load_scaler()
+        except FileNotFoundError:
+            scaler = MinMaxScaler()
+            if all_train_feats:
+                split_feats = [f[:int(len(f) * TRAIN_RATIO)] for f in [stock_processed[c][0] for c in stock_processed]]
+                scaler.fit(np.concatenate(split_feats, axis=0))
+
+    # ── 阶段3：用已 fit 的 scaler 构建序列 ──
+    all_X, all_y = [], []
+
+    for code, (feat, df_feat) in stock_processed.items():
+        try:
+            feat_scaled = scaler.transform(feat)
+            closes = df_feat["close"].values
+            highs  = df_feat["high"].values
+            n = len(df_feat)
+
+            labels = np.zeros(n, dtype=np.float32)
+            for i in range(n - LABEL_HORIZON):
+                fh = highs[i + 1: i + 1 + LABEL_HORIZON].max()
+                if closes[i] > 0:
+                    labels[i] = 1.0 if (fh - closes[i]) / closes[i] > LABEL_THRESHOLD else 0.0
+
+            X_list, y_list = [], []
+            for i in range(WINDOW_SIZE, n - LABEL_HORIZON):
+                X_list.append(feat_scaled[i - WINDOW_SIZE:i])
+                y_list.append(labels[i])
+
+            if X_list:
+                all_X.append(np.array(X_list, dtype=np.float32))
+                all_y.append(np.array(y_list, dtype=np.float32))
+        except Exception as e:
+            logger.error(f"[{code}] 序列构建失败: {e}")
 
     if not all_X:
         return np.array([]), np.array([]), scaler

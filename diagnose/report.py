@@ -1,6 +1,15 @@
-# 终端格式化输出诊断报告
+# 终端格式化输出诊断报告（使用 wcwidth 精确对齐中文字符）
 
-import sys, os
+import sys
+import os
+
+try:
+    from wcwidth import wcswidth
+except ImportError:
+    def wcswidth(s: str) -> int:
+        return sum(2 if '一' <= c <= '鿿' or '＀' <= c <= '￯'
+                   or '　' <= c <= '〿' else 1 for c in s)
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -18,6 +27,14 @@ def _level(prob: float) -> str:
     return "极低"
 
 
+def _pad_line(s: str, total_inner_width: int) -> str:
+    """根据 wcwidth 精确计算显示宽度并填充空格。"""
+    w   = wcswidth(s)
+    w   = w if w >= 0 else len(s)  # wcwidth 返回 -1 表示不可打印字符
+    pad = total_inner_width - w
+    return f"║  {s}{' ' * max(pad, 0)}║"
+
+
 def print_report(result: dict):
     """
     在终端打印格式化诊断报告。
@@ -25,18 +42,15 @@ def print_report(result: dict):
     Args:
         result: diagnose.analyzer.diagnose() 的返回值
     """
-    W = 44
+    INNER_WIDTH = 40  # ║  content  ║ 中 content 的显示宽度
+    TOTAL_WIDTH = INNER_WIDTH + 4  # 含左右 ║ 和两个空格
+
+    sep = "╠" + "═" * (TOTAL_WIDTH - 2) + "╣"
+    top = "╔" + "═" * (TOTAL_WIDTH - 2) + "╗"
+    bot = "╚" + "═" * (TOTAL_WIDTH - 2) + "╝"
 
     def line(s: str = "") -> str:
-        # 中文字符占2个宽度，需要手动计算填充
-        display_len = sum(2 if '一' <= c <= '鿿' or '　' <= c <= '〿'
-                          or '＀' <= c <= '￯' else 1 for c in s)
-        pad = W - 4 - display_len
-        return f"║  {s}{' ' * max(pad, 0)}║"
-
-    sep = "╠" + "═" * (W - 2) + "╣"
-    top = "╔" + "═" * (W - 2) + "╗"
-    bot = "╚" + "═" * (W - 2) + "╝"
+        return _pad_line(s, INNER_WIDTH)
 
     code  = result["stock_code"]
     name  = result.get("stock_name", code)
@@ -58,7 +72,7 @@ def print_report(result: dict):
 
     lines = [
         top,
-        line("    AlphaQuant 单股诊断报告"),
+        line("  AlphaQuant 单股诊断报告"),
         sep,
         line(f"股票：{name} ({code[2:]})"),
         line(f"当前价：{price:.2f}  涨跌：{pct_str}"),

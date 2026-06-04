@@ -125,6 +125,42 @@ def cmd_diagnose(args):
             print_batch_summary(results)
 
 
+def cmd_reset(args):
+    """重置虚拟账户到初始状态（清空持仓、恢复初始资金）。"""
+    import json, shutil
+    from config import LOGS_DIR, INIT_CAPITAL
+
+    state_file   = os.path.join(LOGS_DIR, "account_state.json")
+    suspend_file = os.path.join(LOGS_DIR, "suspend_state.json")
+    peak_file    = os.path.join(LOGS_DIR, "peak_assets.json")
+
+    print("\n⚠️  此操作将重置虚拟账户到初始状态：")
+    print(f"   - 现金恢复为 ¥{INIT_CAPITAL:,.0f}")
+    print("   - 清空所有持仓")
+    print("   - 清除暂停状态和峰值记录")
+    confirm = input("\n确认重置？输入 yes 继续：").strip().lower()
+
+    if confirm != "yes":
+        print("已取消")
+        return
+
+    new_state = {
+        "cash": float(INIT_CAPITAL),
+        "holdings": {},
+        "today_bought": [],
+        "updated_at": __import__("datetime").datetime.now().isoformat(),
+    }
+    with open(state_file, "w", encoding="utf-8") as f:
+        json.dump(new_state, f, ensure_ascii=False, indent=2)
+
+    for f in [suspend_file, peak_file]:
+        if os.path.exists(f):
+            os.remove(f)
+
+    logger.info(f"账户已重置，初始资金 ¥{INIT_CAPITAL:,.0f}")
+    print(f"\n✓ 账户已重置，初始资金 ¥{INIT_CAPITAL:,.0f}")
+
+
 # ── 入口 ──────────────────────────────────────────────
 
 def main():
@@ -142,11 +178,12 @@ def main():
   python main.py --mode diagnose --stock sh600519
   python main.py --mode diagnose --stock sh600519,sz000858,sz300750
   python main.py --mode diagnose --stock sh600519 --cost 1650.00
+  python main.py --mode reset              # 重置虚拟账户到初始状态
         """,
     )
     parser.add_argument(
         "--mode",
-        choices=["train", "backtest", "paper", "dashboard", "signal", "diagnose"],
+        choices=["train", "backtest", "paper", "dashboard", "signal", "diagnose", "reset"],
         required=True,
         help="运行模式",
     )
@@ -166,6 +203,7 @@ def main():
         "dashboard": cmd_dashboard,
         "signal":    cmd_signal,
         "diagnose":  cmd_diagnose,
+        "reset":     cmd_reset,
     }
     dispatch[args.mode](args)
 

@@ -9,6 +9,8 @@ DATA_CACHE_DIR   = os.path.join(BASE_DIR, "data", "cache")
 MODEL_SAVE_DIR   = os.path.join(BASE_DIR, "models", "saved")
 LOGS_DIR         = os.path.join(BASE_DIR, "logs")
 REPORTS_DIR      = os.path.join(BASE_DIR, "reports")
+SIGNAL_CACHE_FILE = os.path.join(LOGS_DIR, "signals_cache.json")
+PEAK_ASSETS_FILE  = os.path.join(LOGS_DIR, "peak_assets.json")
 
 for _d in [DATA_CACHE_DIR, MODEL_SAVE_DIR, LOGS_DIR, REPORTS_DIR]:
     os.makedirs(_d, exist_ok=True)

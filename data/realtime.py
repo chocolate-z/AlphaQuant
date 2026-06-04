@@ -10,12 +10,9 @@ import pandas as pd
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import DATA_CACHE_DIR, STOCK_POOL
+from data.loader import _cache_path
 
 logger = logging.getLogger(__name__)
-
-
-def _cache_path(stock_code: str) -> str:
-    return os.path.join(DATA_CACHE_DIR, f"{stock_code}.csv")
 
 
 def is_trade_day(check_date: date = None) -> bool:

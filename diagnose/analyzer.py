@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy import stats
+import torch
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -136,7 +137,6 @@ def diagnose(stock_code: str, holdings_cost: float = None) -> dict:
         model      = load_model(model_path)
         scaler     = load_scaler()
         X = build_inference_sequence(df, scaler)
-        import torch
         X_t = torch.tensor(X, dtype=torch.float32)
         model.eval()
         with torch.no_grad():
