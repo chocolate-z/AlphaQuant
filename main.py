@@ -131,8 +131,20 @@ def run_backtest():
     logger.info(f"=== 历史回测 [{mode_tag}] ===")
 
     from datetime import datetime
-    end_str = datetime.today().strftime("%Y%m%d")
-    start_str = START_DATE.replace("-", "")
+    _default_end   = datetime.today().strftime("%Y%m%d")
+    _default_start = START_DATE.replace("-", "")
+
+    print()
+    start_str = _ask("回测起始日期（格式 YYYYMMDD，默认 20150101）", _default_start)
+    end_str   = _ask(f"回测结束日期（格式 YYYYMMDD，默认 {_default_end}）", _default_end)
+
+    # 验证日期格式
+    for _label, _val in [("起始日期", start_str), ("结束日期", end_str)]:
+        try:
+            datetime.strptime(_val, "%Y%m%d")
+        except ValueError:
+            print(f"  ✗ {_label} 格式错误：{_val}，应为 YYYYMMDD")
+            return
 
     logger.info("正在拉取5个基准指数历史数据...")
     benchmarks = fetch_all_benchmarks(start_str, end_str)
@@ -141,7 +153,7 @@ def run_backtest():
     else:
         logger.warning("基准指数拉取失败，将跳过对比图")
 
-    stock_data = load_all_stocks()
+    stock_data = load_all_stocks(start=start_str, end=end_str)
     model      = load_model(model_path)
     scaler     = load_scaler()
     BacktestEngine(stock_data, model, scaler, benchmarks=benchmarks).run()

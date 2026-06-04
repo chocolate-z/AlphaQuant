@@ -431,7 +431,8 @@ def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFram
     return df
 
 
-def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
+def load_all_stocks(force_refresh: bool = False, quick: bool = False,
+                    start: str = None, end: str = None) -> dict:
     """
     批量加载股票数据，并发4线程 + 信号量限速防止被封。
 
@@ -439,8 +440,10 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
         force_refresh: 强制重新从网络拉取
         quick: 快速模式 — 从全A股随机抽 QUICK_STOCK_COUNT 只 + 近 QUICK_HISTORY_YEARS 年
                False   — 完整模式 — 从全A股随机抽 FULL_STOCK_COUNT 只 + 完整历史
+        start: 可选起始日期 YYYYMMDD，提供时对所有股票使用 _fetch_kline
+        end:   可选截止日期 YYYYMMDD
     """
-    fetch_start = START_DATE.replace("-", "")
+    default_start = START_DATE.replace("-", "")
 
     all_codes = fetch_all_stock_codes()
     today_str = datetime.today().strftime("%Y%m%d")
@@ -449,14 +452,18 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
         count = min(QUICK_STOCK_COUNT, len(all_codes))
         pool  = random.sample(all_codes, count)
         cutoff = datetime.today() - timedelta(days=QUICK_HISTORY_YEARS * 365)
-        fetch_start = cutoff.strftime("%Y%m%d")
+        fetch_start = start or cutoff.strftime("%Y%m%d")
         logger.info(f"[快速模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {fetch_start}")
         logger.info(f"[快速模式] 股票列表: {pool}")
     else:
         count = min(FULL_STOCK_COUNT, len(all_codes))
         pool  = random.sample(all_codes, count)
+        fetch_start = start or default_start
         logger.info(f"[完整模式] 从全A股({len(all_codes)}只)随机选取 {count} 只，起始日期 {fetch_start}")
         logger.info(f"[完整模式] 股票列表: {pool}")
+
+    fetch_end = end or today_str
+    use_kline = quick or (start is not None)  # custom date range forces kline path
 
     result: dict = {}
     total = len(pool)
@@ -475,8 +482,8 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False) -> dict:
         _semaphore.acquire()
         try:
             time.sleep(random.uniform(0.3, 1.0))  # per-thread random delay
-            if quick:
-                df = _fetch_kline(code, fetch_start, today_str)
+            if use_kline:
+                df = _fetch_kline(code, fetch_start, fetch_end)
             else:
                 df = load_stock_data(code, force_refresh=force_refresh)
         finally:
