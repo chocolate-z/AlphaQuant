@@ -85,7 +85,7 @@ def compute_raw_features(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = (close / ma - 1).fillna(0)
 
     # ── 量能 ──────────────────────────────────────────
-    vol     = df["volume"].replace(0, np.nan).fillna(method="ffill").fillna(1)
+    vol     = df["volume"].replace(0, np.nan).ffill().fillna(1)
     vol_ma5  = vol.rolling(5,  min_periods=1).mean()
     vol_ma20 = vol.rolling(20, min_periods=1).mean()
     df["vol_ratio"]  = (vol / (vol_ma20 + 1e-9)).clip(0, 10)
