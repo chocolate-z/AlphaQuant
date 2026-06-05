@@ -79,8 +79,19 @@ _CSS = """
   --shadow:0 1px 2px rgba(0,0,0,.04),0 6px 20px rgba(0,0,0,.05);
   --shadow-lg:0 8px 36px rgba(0,0,0,.12);
 }
+/* 深色变量：手动选「深色」时强制；「跟随系统」时随 prefers-color-scheme；「浅色」时不生效 */
+[data-theme="dark"],
+.aq-dark{
+    --bg:#000000; --card:#1c1c1e; --card-2:#161618; --text:#f5f5f7; --sub:#a1a1a6; --faint:#8e8e93;
+    --line:rgba(255,255,255,.1); --hairline:rgba(255,255,255,.07); --hover:rgba(255,255,255,.06);
+    --accent:#0a84ff; --accent-h:#3a9bff; --accent-soft:rgba(10,132,255,.22);
+    --up:#30d158; --up-s:rgba(48,209,88,.18); --down:#ff453a; --down-s:rgba(255,69,58,.18); --warn:#ffd60a;
+    --sidebar:rgba(28,28,30,.72);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.4);
+    --shadow-lg:0 10px 40px rgba(0,0,0,.6);
+}
 @media (prefers-color-scheme:dark){
-  :root{
+  :root:not([data-theme="light"]){
     --bg:#000000; --card:#1c1c1e; --card-2:#161618; --text:#f5f5f7; --sub:#a1a1a6; --faint:#8e8e93;
     --line:rgba(255,255,255,.1); --hairline:rgba(255,255,255,.07); --hover:rgba(255,255,255,.06);
     --accent:#0a84ff; --accent-h:#3a9bff; --accent-soft:rgba(10,132,255,.22);
@@ -177,6 +188,26 @@ canvas{max-width:100%}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--warn);border-top-color:transparent;
   border-radius:50%;animation:sp .8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* ── 侧栏底部主题切换 ── */
+.side-foot{margin-top:auto;padding:14px 8px 2px}
+.side-foot .ttl{font-size:.68em;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--faint);padding:0 4px 6px}
+.seg{display:flex;background:var(--hover);border-radius:9px;padding:3px;gap:2px}
+.seg button{flex:1;background:transparent;color:var(--sub);box-shadow:none;border-radius:7px;
+  padding:5px 0;font-size:.76em;font-weight:500}
+.seg button:hover{background:transparent;color:var(--text);box-shadow:none;transform:none}
+.seg button.active{background:var(--card);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.18)}
+/* ── 账户 Hero（苹果股票风格大数字）── */
+.hero{background:var(--card);border-radius:22px;padding:30px 34px;box-shadow:var(--shadow);margin:22px 0}
+.hero-label{color:var(--sub);font-size:.92em;font-weight:500}
+.hero-num{font-size:3.4em;font-weight:700;letter-spacing:-.035em;margin:6px 0 16px;line-height:1}
+.hero-row{display:flex;gap:12px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:baseline;gap:6px;padding:8px 15px;border-radius:980px;
+  font-weight:600;font-size:.95em}
+.pill small{font-weight:500;opacity:.65;margin-left:2px;font-size:.82em}
+.pill-up{background:var(--up-s);color:var(--up)}
+.pill-down{background:var(--down-s);color:var(--down)}
+.pill-flat{background:var(--hover);color:var(--sub)}
 /* ── 响应式 ── */
 @media(max-width:1080px){.control-layout{grid-template-columns:1fr}.control-side{position:static}}
 @media(max-width:820px){
@@ -233,16 +264,50 @@ def _sidebar(active: str = "") -> str:
             f'  <div class="brand"><div class="logo">A</div>'
             f'    <div><div class="name">AlphaQuant</div><div class="sub">量化交易系统</div></div></div>'
             f'  <nav>{"".join(rows)}</nav>'
+            f'  <div class="side-foot"><div class="ttl">外观</div>'
+            f'    <div class="seg" id="themeSeg">'
+            f'      <button type="button" data-theme-val="light">浅色</button>'
+            f'      <button type="button" data-theme-val="dark">深色</button>'
+            f'      <button type="button" data-theme-val="auto">跟随</button>'
+            f'    </div></div>'
             f'</aside>')
+
+
+# 头部内联脚本：渲染前先套用已保存的主题，避免明暗闪烁
+_THEME_HEAD = ("<script>(function(){try{var t=localStorage.getItem('aq-theme');"
+               "if(t&&t!=='auto')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>")
+
+# 尾部脚本：高亮当前选项 + 点击切换并持久化
+_THEME_BODY = """
+<script>
+(function(){
+  function apply(t){
+    if(t==='auto'){document.documentElement.removeAttribute('data-theme');}
+    else{document.documentElement.setAttribute('data-theme',t);}
+  }
+  var saved='auto';try{saved=localStorage.getItem('aq-theme')||'auto';}catch(e){}
+  apply(saved);
+  document.querySelectorAll('#themeSeg button').forEach(function(b){
+    if(b.dataset.themeVal===saved)b.classList.add('active');
+    b.addEventListener('click',function(){
+      var t=b.dataset.themeVal;
+      try{localStorage.setItem('aq-theme',t);}catch(e){}
+      apply(t);
+      document.querySelectorAll('#themeSeg button').forEach(function(x){x.classList.remove('active');});
+      b.classList.add('active');
+    });
+  });
+})();
+</script>"""
 
 
 def _page(title: str, body: str, active: str = "", auto_refresh: int = 0) -> str:
     refresh = f'<meta http-equiv="refresh" content="{auto_refresh}">' if auto_refresh else ""
     return (f"<!DOCTYPE html><html lang='zh-CN'><head>"
             f"<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>{title} — AlphaQuant</title>{refresh}{_CSS}</head>"
+            f"<title>{title} — AlphaQuant</title>{refresh}{_THEME_HEAD}{_CSS}</head>"
             f"<body><div class='app'>{_sidebar(active)}"
-            f"<main class='content'>{body}</main></div></body></html>")
+            f"<main class='content'>{body}</main></div>{_THEME_BODY}</body></html>")
 
 
 # ── 路由 ──────────────────────────────────────────────
@@ -268,12 +333,25 @@ def index():
     def card(label, value, css_class=""):
         return f"<div class='card'><div class='lbl'>{label}</div><div class='val {css_class}'>{value}</div></div>"
 
-    cards = (f"<div class='cards'>"
-             + card("虚拟总资产", f"¥{total:,.0f}")
+    def pill(amount, pct, label):
+        cls  = "pill-up" if amount > 0 else ("pill-down" if amount < 0 else "pill-flat")
+        arr  = "↑" if amount > 0 else ("↓" if amount < 0 else "→")
+        pcts = f" ({pct:+.2f}%)" if pct is not None else ""
+        return (f"<span class='pill {cls}'>{arr} ¥{abs(amount):,.0f}{pcts}"
+                f"<small>{label}</small></span>")
+
+    today_pct = (today_pnl / max(total - today_pnl, 1)) * 100 if today_pnl else 0.0
+    hero = (f"<div class='hero'>"
+            f"  <div class='hero-label'>虚拟总资产</div>"
+            f"  <div class='hero-num'>¥{total:,.0f}</div>"
+            f"  <div class='hero-row'>{pill(today_pnl, today_pct, '今日')}"
+            f"      {pill(cum_pnl, cum_pct, '累计')}</div>"
+            f"</div>")
+
+    cards = (hero + "<div class='cards'>"
              + card("现金余额",   f"¥{state.get('cash',0):,.0f}")
              + card("持仓市值",   f"¥{state.get('holding_value',0):,.0f}")
-             + card("今日盈亏",   f"{'+'if today_pnl>=0 else ''}¥{today_pnl:,.0f}", "up" if today_pnl>=0 else "down")
-             + card("累计盈亏",   f"{'+'if cum_pnl>=0 else ''}¥{cum_pnl:,.0f} ({cum_pct:+.2f}%)", "up" if cum_pnl>=0 else "down")
+             + card("持仓数量",   f"{len(state.get('holdings',{}))} 只")
              + "</div>")
 
     chart = f"""
