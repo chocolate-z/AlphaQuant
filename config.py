@@ -52,7 +52,7 @@ FEATURE_DIM      = 19             # 特征维度（16个个股技术特征 + 3�
 LABEL_HORIZON    = 5              # 标签：未来N日
 LABEL_THRESHOLD  = 0.05           # 绝对标签阈值（非超额模式下使用）
 USE_EXCESS_LABEL = True           # True = 超额收益标签（个股相对大盘），False = 绝对涨幅
-EXCESS_THRESHOLD = 0.03           # 超额收益阈值：个股5日收益 - 大盘5日收益 > 3%
+EXCESS_THRESHOLD = 0.02           # 超额收益阈值：个股5日收益 - 大盘5日收益 > 2%（降低稀疏度）
 
 # ── 模型 ─────────────────────────────────────────────
 # 缩小容量 + 加强正则：金融数据信噪比极低，小模型反而泛化更好（防过拟合）
@@ -62,6 +62,8 @@ FC_HIDDEN            = 24
 DROPOUT              = 0.45       # 0.3→0.45：更强随机失活
 WEIGHT_DECAY         = 1e-3       # 1e-4→1e-3：更强 L2 正则
 NOISE_STD            = 0.05       # 训练时给输入加高斯噪声做数据增强（0=关闭）
+FOCAL_GAMMA          = 2.0        # Focal Loss 聚焦参数：越大越忽略易分样本，专注难例
+LABEL_SMOOTHING      = 0.05       # 标签平滑：避免模型过于自信，改善校准
 LEARNING_RATE        = 3e-4       # 5e-4→3e-4：放慢拟合，延迟过拟合
 BATCH_SIZE           = 512        # 更大batch：减少迭代次数，加快每轮速度
 MAX_EPOCHS           = 300        # 足够多轮次，靠早停控制

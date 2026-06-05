@@ -67,9 +67,11 @@ def _load_market_df() -> pd.DataFrame:
         return _MARKET_CACHE
 
     cache_file = os.path.join(DATA_CACHE_DIR, "market_features.csv")
-    if os.path.exists(cache_file) and time.time() - os.path.getmtime(cache_file) < 3 * 86400:
+    # 7天内的缓存直接使用
+    if os.path.exists(cache_file) and time.time() - os.path.getmtime(cache_file) < 7 * 86400:
         try:
             _MARKET_CACHE = pd.read_csv(cache_file, parse_dates=["date"])
+            logger.info(f"市场特征使用缓存（{len(_MARKET_CACHE)} 条交易日）")
             return _MARKET_CACHE
         except Exception:
             pass
@@ -81,7 +83,17 @@ def _load_market_df() -> pd.DataFrame:
                                   START_DATE.replace("-", ""),
                                   datetime.today().strftime("%Y%m%d"))
         if idx is None or idx.empty:
-            logger.warning("沪深300指数拉取失败，市场特征将填 0")
+            # 降级：尝试使用过期的旧缓存
+            if os.path.exists(cache_file):
+                try:
+                    stale = pd.read_csv(cache_file, parse_dates=["date"])
+                    if not stale.empty:
+                        logger.warning("沪深300在线拉取失败，使用过期缓存（市场特征可能略旧）")
+                        _MARKET_CACHE = stale
+                        return _MARKET_CACHE
+                except Exception:
+                    pass
+            logger.warning("沪深300指数拉取失败且无缓存，市场特征将填 0")
             _MARKET_CACHE = pd.DataFrame(columns=["date"] + MARKET_FEATURES)
             return _MARKET_CACHE
 

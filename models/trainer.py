@@ -14,10 +14,38 @@ from config import (
     BATCH_SIZE, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR_PATIENCE,
     LEARNING_RATE, TRAIN_RATIO, MODEL_SAVE_DIR, REPORTS_DIR,
     CPU_THREAD_RATIO, WEIGHT_DECAY, NOISE_STD, ENSEMBLE_N_MODELS,
+    FOCAL_GAMMA, LABEL_SMOOTHING,
 )
 from models.lstm_model import LSTMModel
 
 logger = logging.getLogger(__name__)
+
+
+def _focal_loss(pred: torch.Tensor, target: torch.Tensor, pos_weight: float) -> torch.Tensor:
+    """
+    Focal loss with class-balanced alpha and label smoothing.
+    Reduces emphasis on easy examples (high-confidence correct predictions),
+    forcing the model to focus on hard borderline cases.
+
+    FL = -alpha * (1-p)^gamma * log(p)  for positives
+       - (1-alpha) * p^gamma * log(1-p) for negatives
+
+    alpha is derived from pos_weight to match class balance.
+    """
+    eps = LABEL_SMOOTHING
+    # smooth targets: 1→(1-eps), 0→eps
+    smooth_target = target * (1 - eps) + (1 - target) * eps
+    # alpha from pos_weight: pos_weight = neg/pos, alpha = neg/(neg+pos) = pw/(1+pw)
+    alpha = pos_weight / (1.0 + pos_weight)
+    gamma = FOCAL_GAMMA
+
+    p = pred.clamp(1e-7, 1 - 1e-7)
+    pt_pos = p
+    pt_neg = 1 - p
+    focal_pos = alpha       * (pt_neg ** gamma) * torch.log(pt_pos)
+    focal_neg = (1 - alpha) * (pt_pos ** gamma) * torch.log(pt_neg)
+    loss = -(smooth_target * focal_pos + (1 - smooth_target) * focal_neg)
+    return loss.mean()
 
 
 def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
@@ -141,10 +169,7 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
             if use_amp:
                 with torch.cuda.amp.autocast():
                     pred = model(xb)
-                    loss = -(
-                        pos_weight_val * yb * torch.log(pred + 1e-9)
-                        + (1 - yb) * torch.log(1 - pred + 1e-9)
-                    ).mean()
+                    loss = _focal_loss(pred, yb, pos_weight_val)
                 scaler_amp.scale(loss).backward()
                 scaler_amp.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -152,10 +177,7 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
                 scaler_amp.update()
             else:
                 pred = model(xb)
-                loss = -(
-                    pos_weight_val * yb * torch.log(pred + 1e-9)
-                    + (1 - yb) * torch.log(1 - pred + 1e-9)
-                ).mean()
+                loss = _focal_loss(pred, yb, pos_weight_val)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()

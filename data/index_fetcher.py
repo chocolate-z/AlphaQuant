@@ -44,9 +44,21 @@ BENCHMARKS = {
 
 def fetch_index_history(sohu_code: str, start: str, end: str) -> pd.DataFrame:
     """
-    从搜狐财经拉取指数日线（前复权）。
+    从搜狐财经拉取指数日线（前复权）；失败时自动回落到腾讯财经备用源。
     sohu_code 示例: cn_s_sh000001（指数代码需加 s_ 前缀）
     """
+    df = _fetch_sohu(sohu_code, start, end)
+    if not df.empty:
+        return df
+
+    # 腾讯财经备用：把 sohu_code 转成腾讯代码（cn_s_sh000300 → sh000300）
+    tencent_code = sohu_code.replace("cn_s_", "")
+    logger.info(f"[{sohu_code}] 搜狐失败，尝试腾讯财经备用源 ({tencent_code})")
+    df2 = _fetch_tencent(tencent_code, start, end)
+    return df2
+
+
+def _fetch_sohu(sohu_code: str, start: str, end: str) -> pd.DataFrame:
     url = (
         f"https://q.stock.sohu.com/hisHq"
         f"?code={sohu_code}&start={start}&end={end}"
@@ -65,7 +77,7 @@ def fetch_index_history(sohu_code: str, start: str, end: str) -> pd.DataFrame:
             break
         except requests.exceptions.RequestException as e:
             if attempt == 3:
-                logger.warning(f"[{sohu_code}] 指数拉取失败: {e}")
+                logger.warning(f"[{sohu_code}] 搜狐拉取失败: {e}")
                 return pd.DataFrame()
             time.sleep(2 ** attempt)
     else:
@@ -97,7 +109,59 @@ def fetch_index_history(sohu_code: str, start: str, end: str) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        logger.warning(f"[{sohu_code}] 指数解析失败: {e}")
+        logger.warning(f"[{sohu_code}] 搜狐解析失败: {e}")
+        return pd.DataFrame()
+
+
+def _fetch_tencent(tencent_code: str, start: str, end: str) -> pd.DataFrame:
+    """腾讯财经复权日线备用源。tencent_code 示例: sh000300"""
+    url = (
+        f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        f"?_var=kline_dayqfq&param={tencent_code},day,{start[:4]}-{start[4:6]}-{start[6:]},"
+        f"{end[:4]}-{end[4:6]}-{end[6:]},2000,qfq"
+    )
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=20, headers=_headers())
+            if resp.status_code in (503, 429):
+                time.sleep(3 * (2 ** attempt))
+                continue
+            resp.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt == 2:
+                logger.warning(f"[{tencent_code}] 腾讯拉取失败: {e}")
+                return pd.DataFrame()
+            time.sleep(2 ** attempt)
+    else:
+        return pd.DataFrame()
+
+    try:
+        # strip JS var assignment: kline_dayqfq={...}
+        text = resp.text
+        m = re.search(r'=(\{.*\})', text, re.DOTALL)
+        if not m:
+            return pd.DataFrame()
+        data = json.loads(m.group(1))
+        # data structure: {"data": {"sh000300": {"day": [[date, open, close, high, low, vol], ...]}}}
+        inner = data.get("data", {}).get(tencent_code, {})
+        rows = inner.get("qfqday", inner.get("day", []))
+        records = []
+        for row in rows:
+            try:
+                records.append({
+                    "date":  pd.Timestamp(row[0]),
+                    "close": float(row[2]),
+                })
+            except (ValueError, IndexError):
+                continue
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records).sort_values("date").reset_index(drop=True)
+        logger.info(f"[{tencent_code}] 腾讯财经加载 {len(df)} 条")
+        return df
+    except Exception as e:
+        logger.warning(f"[{tencent_code}] 腾讯解析失败: {e}")
         return pd.DataFrame()
 
 
