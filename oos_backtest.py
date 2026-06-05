@@ -12,23 +12,16 @@ log.setLevel(logging.INFO)
 _h = logging.StreamHandler(); _h.setLevel(logging.INFO)
 log.addHandler(_h); log.propagate = False
 
-from config import DATA_CACHE_DIR
+from config import DATA_CACHE_DIR, MAX_TRAIN_STOCKS
+from data.loader import load_cached_stocks
 from features.builder import build_all_stocks
 from models.trainer import _temporal_split_masks
 from models.lstm_model import load_best_available
 from backtest.engine import BacktestEngine
 
-# 1) 选与训练同口径的 sh/sz 主板股票（约 120 只）
-files = sorted(glob.glob(os.path.join(DATA_CACHE_DIR, "*.csv")))
-codes = [os.path.splitext(os.path.basename(f))[0] for f in files]
-codes = [c for c in codes if re.match(r"^(sh|sz)\d{6}$", c)]
-sel = codes[::max(1, len(codes) // 120)][:120]
-sd = {}
-for c in sel:
-    df = pd.read_csv(os.path.join(DATA_CACHE_DIR, c + ".csv"), parse_dates=["date"]).sort_values("date").reset_index(drop=True)
-    if len(df) >= 120:
-        sd[c] = df
-log.info(f"加载 {len(sd)} 只 sh/sz 股票")
+# 1) 与训练完全同口径的股票池（沪深主板，均匀抽样 MAX_TRAIN_STOCKS 只），保证回测与训练一致
+sd = load_cached_stocks(limit=MAX_TRAIN_STOCKS, boards=("sh", "sz"))
+log.info(f"加载 {len(sd)} 只 sh/sz 股票（与训练同口径）")
 
 # 2) 求训练截止日（样本外回测的起点）
 X, y, _, dates = build_all_stocks(sd)

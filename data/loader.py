@@ -462,34 +462,40 @@ def load_stock_data(stock_code: str, force_refresh: bool = False) -> pd.DataFram
 
 
 def load_cached_stocks(start: str = None, end: str = None,
-                       min_rows: int = 60, limit: int = None) -> dict:
+                       min_rows: int = 60, limit: int = None,
+                       boards: tuple = ("sh", "sz", "bj")) -> dict:
     """
-    直接读取本地缓存目录下所有已下载的个股 CSV —— 完全离线，不联网。
+    直接读取本地缓存目录下已下载的个股 CSV —— 完全离线，不联网。
 
     适合本机已积累大量缓存的场景：数据更多、速度快、不会触发搜狐 503 限流，
-    且结果可复现（按代码排序取前 N）。会自动跳过非个股缓存文件
-    （market_features.csv、stock_list.json 等）。
+    且结果可复现。会自动跳过非个股缓存文件（market_features.csv 等）。
 
     Args:
         start/end: 可选日期区间 YYYYMMDD，提供时按区间过滤
         min_rows:  少于该行数的股票跳过（数据太少没法构特征）
-        limit:     最多加载多少只（None=全部），按代码排序后取前 limit 只
+        limit:     最多加载多少只（None=全部）。超过 limit 时**均匀抽样**而非只取前 N，
+                   覆盖面更广、更有代表性
+        boards:    保留哪些板块前缀，默认沪深+北交所。训练正式模型建议只用 ("sh","sz")：
+                   北交所(bj)流动性差、走势特殊，混进来会拖累模型质量
 
     Returns:
         {code: DataFrame}
     """
     import glob
     files = sorted(glob.glob(os.path.join(DATA_CACHE_DIR, "*.csv")))
+    prefixes = tuple(boards)
 
     codes = []
     for fp in files:
         name = os.path.splitext(os.path.basename(fp))[0]
-        # 仅保留形如 sh600519 / sz000858 / bj920000 的个股缓存
-        if re.match(r"^(sh|sz|bj)\d{6}$", name):
+        # 仅保留形如 sh600519 / sz000858 / bj920000，且属于指定板块的个股缓存
+        if re.match(r"^(sh|sz|bj)\d{6}$", name) and name.startswith(prefixes):
             codes.append((name, fp))
 
-    if limit is not None:
-        codes = codes[:limit]
+    if limit is not None and len(codes) > limit:
+        # 均匀抽样：跨整个代码区间取 limit 只，避免只取前 N 段（更有代表性）
+        stepf = len(codes) / float(limit)
+        codes = [codes[int(i * stepf)] for i in range(limit)]
 
     start_dt = pd.Timestamp(datetime.strptime(start, "%Y%m%d")) if start else None
     end_dt   = pd.Timestamp(datetime.strptime(end,   "%Y%m%d")) if end else None

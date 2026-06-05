@@ -102,9 +102,10 @@ def _load_training_stocks(force_refresh: bool = False) -> dict:
     from config import PREFER_CACHED_POOL, MAX_TRAIN_STOCKS
     from data.loader import load_cached_stocks, load_all_stocks
     if PREFER_CACHED_POOL and not force_refresh:
-        cached = load_cached_stocks(limit=MAX_TRAIN_STOCKS)
+        # 只用沪深主板(sh/sz)：北交所流动性差、走势特殊，混入会拖累模型质量
+        cached = load_cached_stocks(limit=MAX_TRAIN_STOCKS, boards=("sh", "sz"))
         if len(cached) >= 50:
-            logger.info(f"训练数据来源：本地缓存池 {len(cached)} 只（离线、数据更多、不触发限流）")
+            logger.info(f"训练数据来源：本地缓存池 {len(cached)} 只 sh/sz 主板（离线、数据多、不限流）")
             return cached
         logger.warning(f"本地缓存仅 {len(cached)} 只，不足以训练，回退到联网随机抽样")
     return load_all_stocks(force_refresh=force_refresh, quick=False)
