@@ -252,6 +252,7 @@ _ICONS = {
     "perf":     '<polyline points="3 16.5 9 10.5 13 14.5 21 6.5"/><polyline points="15.5 6.5 21 6.5 21 12"/>',
     "trades":   '<path d="M5.5 3h13v18l-2.6-1.8L13.3 21 11 19.2 8.7 21 6.1 19.2 3.5 21V5z" transform="translate(1 0)"/><line x1="9" y1="8.5" x2="16" y2="8.5"/><line x1="9" y1="12.5" x2="16" y2="12.5"/>',
     "control":  '<line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="9" cy="8" r="2.3"/><circle cx="15" cy="16" r="2.3"/>',
+    "logs":     '<rect x="4" y="3" width="16" height="18" rx="2.2"/><line x1="8" y1="8" x2="16" y2="8"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="16" x2="13" y2="16"/>',
 }
 
 def _icon(name: str) -> str:
@@ -271,6 +272,7 @@ _NAV_ITEMS = [
     ("trades",    "/trades",      "trades",   "历史交易"),
     ("group", "操作", "", ""),
     ("control",   "/control",     "control",  "操作中心"),
+    ("logs",      "/logs",        "logs",     "运行日志"),
 ]
 
 def _sidebar(active: str = "") -> str:
@@ -845,141 +847,109 @@ def control():
         + panel("reset")
     )
 
-    console = """
-    <div class="panel">
-      <h2 id="taskTitle">运行控制台</h2>
-      <p class="note" id="taskState">空闲中——点击左侧任意「执行」按钮开始</p>
-      <div id="liveBox" style="display:none;margin:6px 0 12px">
-        <div class="lbl" style="margin-bottom:6px">📈 训练实时曲线</div>
-        """ + _CHARTJS + """
-        <canvas id="liveChart" height="120"></canvas>
-      </div>
-      <div id="console">（任务输出会实时显示在这里）</div>
-      <div id="reports"></div>
-    </div>"""
 
-    script = """
+    # 操作中心：只放操作面板；点「执行」后跳到独立的「运行日志」页看实时输出
+    ctrl_script = """
     <script>
-    const consoleEl = document.getElementById('console');
-    const stateEl   = document.getElementById('taskState');
-    const reportsEl = document.getElementById('reports');
-    const liveBox   = document.getElementById('liveBox');
-    let evtSource = null;
+    document.querySelectorAll('form[data-action]').forEach(function(form){
+      form.addEventListener('submit', async function(ev){
+        ev.preventDefault();
+        const res = await fetch('/run/'+form.dataset.action, {method:'POST', body:new FormData(form)});
+        const data = await res.json();
+        if(!data.ok){ alert(data.error||'启动失败'); return; }
+        location.href = '/logs';
+      });
+    });
+    fetch('/task_status').then(function(r){return r.json();}).then(function(d){
+      if(d.busy){
+        document.querySelectorAll('form[data-action] button').forEach(function(b){b.disabled=true;});
+        var n=document.getElementById('ctrlNote');
+        if(n)n.innerHTML='⏳ 有任务正在运行（'+d.name+'）→ <a href="/logs">查看运行日志 ›</a>';
+      }
+    });
+    </script>"""
+    body = (f"<h1>操作中心</h1>"
+            f"<p class='note' id='ctrlNote'>点任意「执行」后会自动跳到「运行日志」页看实时输出；同一时刻只允许一个任务运行。</p>"
+            f"<h2 style='margin-top:8px'>训练</h2><div class='grid'>{train_panels}</div>"
+            f"<h2>回测</h2><div class='grid'>{bt_panels}</div>"
+            f"<h2>工具</h2><div class='grid'>{tool_panels}</div>"
+            f"{ctrl_script}")
+    return _page("操作中心", body, active="control")
 
-    // ── 训练实时曲线（解析控制台每轮日志，无需后端改动）──
-    let lineBuf = '', liveChart = null;
-    function resetLive(){
-      lineBuf = '';
-      liveBox.style.display = 'none';
-      if(liveChart){ liveChart.destroy(); liveChart = null; }
-    }
+
+@app.route("/logs")
+def logs():
+    """运行日志：独立页面，实时滚动任务输出 + 训练曲线 + 生成的图表；自动挂接正在运行的任务。"""
+    log_css = ("<style>"
+               ".loghead{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px}"
+               ".loghead h2{margin:0}"
+               "#console{height:58vh;min-height:300px}"
+               "</style>")
+    console = ("<div class='panel'>"
+               "<div class='loghead'><h2 id='taskTitle'>运行日志</h2>"
+               "<span id='taskState' class='note'>空闲中 —— 在「操作中心」点「执行」后，这里会实时滚动输出</span></div>"
+               "<div id='liveBox' style='display:none;margin:6px 0 12px'>"
+               "<div class='lbl' style='margin-bottom:6px'>📈 训练实时曲线</div>"
+               + _CHARTJS +
+               "<canvas id='liveChart' height='120'></canvas></div>"
+               "<div id='console'>（任务输出会实时显示在这里）</div>"
+               "<div id='reports'></div></div>")
+    engine = """
+    <script>
+    const consoleEl=document.getElementById('console');
+    const stateEl=document.getElementById('taskState');
+    const reportsEl=document.getElementById('reports');
+    const liveBox=document.getElementById('liveBox');
+    let evtSource=null, lineBuf='', liveChart=null;
+    function resetLive(){lineBuf='';liveBox.style.display='none';if(liveChart){liveChart.destroy();liveChart=null;}}
     function ensureChart(){
       if(liveChart) return liveChart;
-      liveBox.style.display = 'block';
-      liveChart = new Chart(document.getElementById('liveChart'), {
-        type:'line',
+      liveBox.style.display='block';
+      liveChart=new Chart(document.getElementById('liveChart'),{type:'line',
         data:{labels:[],datasets:[
-          {label:'损失',yAxisID:'yL',data:[],borderColor:'#0071e3',backgroundColor:'#0071e3',pointRadius:0,tension:.3,borderWidth:2},
-          {label:'训练识别率',yAxisID:'yR',data:[],borderColor:'#34c759',backgroundColor:'#34c759',pointRadius:0,tension:.3,borderWidth:2},
-          {label:'验证识别率',yAxisID:'yR',data:[],borderColor:'#ff9f0a',backgroundColor:'#ff9f0a',pointRadius:0,tension:.3,borderWidth:2}
-        ]},
+          {label:'损失',yAxisID:'yL',data:[],borderColor:'#0071e3',pointRadius:0,tension:.3,borderWidth:2},
+          {label:'训练识别率',yAxisID:'yR',data:[],borderColor:'#34c759',pointRadius:0,tension:.3,borderWidth:2},
+          {label:'验证识别率',yAxisID:'yR',data:[],borderColor:'#ff9f0a',pointRadius:0,tension:.3,borderWidth:2}]},
         options:{animation:false,interaction:{mode:'index',intersect:false},
-          scales:{
-            yL:{position:'left',title:{display:true,text:'损失',color:'#0071e3'},
-                ticks:{color:'#6e6e73'},grid:{color:'#f0f0f2'}},
-            yR:{position:'right',min:0.3,max:1.0,title:{display:true,text:'识别率AUC',color:'#34c759'},
-                ticks:{color:'#6e6e73'},grid:{drawOnChartArea:false}},
-            x:{ticks:{color:'#6e6e73',maxTicksLimit:15},grid:{color:'#f0f0f2'}}
-          },
-          plugins:{legend:{labels:{color:'#1d1d1f',boxWidth:12,usePointStyle:true}}}
-        }
-      });
+          scales:{yL:{position:'left',title:{display:true,text:'损失',color:'#0071e3'},ticks:{color:'#8a8a8e'},grid:{color:'rgba(128,128,128,.12)'}},
+            yR:{position:'right',min:0.3,max:1.0,title:{display:true,text:'识别率AUC',color:'#34c759'},ticks:{color:'#8a8a8e'},grid:{drawOnChartArea:false}},
+            x:{ticks:{color:'#8a8a8e',maxTicksLimit:15},grid:{color:'rgba(128,128,128,.12)'}}},
+          plugins:{legend:{labels:{color:'#8a8a8e',boxWidth:12,usePointStyle:true}}}}});
       return liveChart;
     }
     function feedChart(text){
-      lineBuf += text;
-      let idx;
-      while((idx = lineBuf.indexOf('\\n')) >= 0){
-        const line = lineBuf.slice(0, idx); lineBuf = lineBuf.slice(idx+1);
-        const m = line.match(/第\\s*(\\d+)轮.*?损失.*?:\\s*([\\d.]+).*?训练识别率:\\s*([\\d.]+).*?验证识别率:\\s*([\\d.]+)/);
-        if(m){
-          const ch = ensureChart();
-          ch.data.labels.push(m[1]);
+      lineBuf+=text; let idx;
+      while((idx=lineBuf.indexOf('\\n'))>=0){
+        const line=lineBuf.slice(0,idx); lineBuf=lineBuf.slice(idx+1);
+        const m=line.match(/第\\s*(\\d+)轮.*?损失.*?:\\s*([\\d.]+).*?训练识别率:\\s*([\\d.]+).*?验证识别率:\\s*([\\d.]+)/);
+        if(m){const ch=ensureChart();ch.data.labels.push(m[1]);
           ch.data.datasets[0].data.push(parseFloat(m[2]));
           ch.data.datasets[1].data.push(parseFloat(m[3]));
-          ch.data.datasets[2].data.push(parseFloat(m[4]));
-          ch.update('none');
-        }
+          ch.data.datasets[2].data.push(parseFloat(m[4]));ch.update('none');}
       }
-    }
-
-    function setButtons(disabled){
-      document.querySelectorAll('form[data-action] button').forEach(b=>b.disabled=disabled);
     }
     function showReports(taskId){
       fetch('/task_reports/'+taskId).then(r=>r.json()).then(d=>{
-        if(!d.images || !d.images.length){ reportsEl.innerHTML=''; return; }
-        let h = '<h2 style="color:#58a6ff;margin-top:16px">📊 生成的图表</h2>';
-        d.images.forEach(img=>{
-          h += '<div style="margin:10px 0"><div class="note">'+img.name+'</div>'
-             + '<a href="'+img.url+'" target="_blank">'
-             + '<img src="'+img.url+'" style="max-width:100%;border:1px solid var(--line);border-radius:10px"></a></div>';
-        });
-        reportsEl.innerHTML = h;
-      });
+        if(!d.images||!d.images.length){reportsEl.innerHTML='';return;}
+        let h='<h2 style="margin-top:16px">📊 生成的图表</h2>';
+        d.images.forEach(img=>{h+='<div style="margin:10px 0"><div class="note">'+img.name+'</div>'
+          +'<a href="'+img.url+'" target="_blank"><img src="'+img.url+'" style="max-width:100%;border:1px solid var(--line);border-radius:10px"></a></div>';});
+        reportsEl.innerHTML=h;});
     }
-    function attach(taskId, name){
-      consoleEl.textContent = '';
-      reportsEl.innerHTML = '';
-      resetLive();
-      stateEl.innerHTML = '<span class="spin"></span><span class="status-running">运行中：'+name+'</span>';
-      setButtons(true);
+    function attach(taskId,name){
+      consoleEl.textContent=''; reportsEl.innerHTML=''; resetLive();
+      stateEl.innerHTML='<span class="spin"></span><span class="status-running">运行中：'+name+'</span>';
       if(evtSource) evtSource.close();
-      evtSource = new EventSource('/stream/'+taskId);
-      evtSource.onmessage = e=>{
-        const txt = JSON.parse(e.data);
-        consoleEl.textContent += txt;
-        consoleEl.scrollTop = consoleEl.scrollHeight;
-        feedChart(txt);
-      };
-      evtSource.addEventListener('done', e=>{
-        const st = JSON.parse(e.data);
-        stateEl.innerHTML = st==='done'
-          ? '<span class="status-done">✓ 已完成</span>'
-          : '<span class="status-error">✗ 出错（详见上方输出）</span>';
-        setButtons(false);
-        evtSource.close();
-        showReports(taskId);
-      });
-      evtSource.onerror = ()=>{ setButtons(false); };
+      evtSource=new EventSource('/stream/'+taskId);
+      evtSource.onmessage=e=>{const txt=JSON.parse(e.data);consoleEl.textContent+=txt;consoleEl.scrollTop=consoleEl.scrollHeight;feedChart(txt);};
+      evtSource.addEventListener('done',e=>{const st=JSON.parse(e.data);
+        stateEl.innerHTML=st==='done'?'<span class="status-done">✓ 已完成</span>':'<span class="status-error">✗ 出错（详见上方输出）</span>';
+        evtSource.close(); showReports(taskId);});
     }
-    document.querySelectorAll('form[data-action]').forEach(form=>{
-      form.addEventListener('submit', async ev=>{
-        ev.preventDefault();
-        const action = form.dataset.action;
-        const res = await fetch('/run/'+action, {method:'POST', body:new FormData(form)});
-        const data = await res.json();
-        if(!data.ok){ stateEl.innerHTML='<span class="status-error">'+data.error+'</span>'; return; }
-        attach(data.task_id, data.name);
-      });
-    });
-    // 页面加载时若已有任务在跑，自动挂接
-    fetch('/task_status').then(r=>r.json()).then(d=>{ if(d.busy) attach(d.task_id, d.name); });
+    fetch('/task_status').then(r=>r.json()).then(d=>{ if(d.busy) attach(d.task_id,d.name); });
     </script>"""
-
-    body = (f"<h1>⚙ 操作中心</h1>"
-            f"<p class='note'>所有命令行菜单操作均可在此执行，耗时任务（训练/回测）会在右侧控制台实时滚动日志。"
-            f"同一时刻只允许一个任务运行。</p>"
-            f"<div class='control-layout'>"
-            f"  <div class='control-actions'>"
-            f"    <h2 style='margin-top:8px'>训练</h2><div class='grid'>{train_panels}</div>"
-            f"    <h2>回测</h2><div class='grid'>{bt_panels}</div>"
-            f"    <h2>工具</h2><div class='grid'>{tool_panels}</div>"
-            f"  </div>"
-            f"  <div class='control-side'>{console}</div>"
-            f"</div>"
-            f"{script}")
-    return _page("操作中心", body, active="control")
+    body = f"<h1>运行日志</h1>{log_css}{console}{engine}"
+    return _page("运行日志", body, active="logs")
 
 
 def start_dashboard():
