@@ -421,6 +421,27 @@ _ACTION_META = {
 }
 
 
+def _backtest_params(f) -> dict:
+    """从表单提取回测参数覆盖，仅保留用户实际填写的项（空值回退 config 默认）。"""
+    spec = {
+        "init_capital":    float, "buy_threshold":  float, "sell_threshold": float,
+        "stop_loss":       float, "take_profit":    float, "max_position":   float,
+        "rank_sell_bottom": float, "max_holdings":  int,   "top_n_buy":      int,
+    }
+    out = {}
+    for key, cast in spec.items():
+        v = (f.get(key) or "").strip()
+        if v:
+            try:
+                out[key] = cast(v)
+            except ValueError:
+                pass
+    rr = f.get("relative_rank")
+    if rr in ("0", "1"):
+        out["relative_rank"] = (rr == "1")
+    return out
+
+
 def _build_action(action: str, f):
     """根据表单参数构造对应的无交互调用闭包。返回 None 表示未知操作。"""
     import main
@@ -442,7 +463,8 @@ def _build_action(action: str, f):
         "train_quick":    lambda: main.run_train(quick=True),
         "train_resume":   lambda: main.run_train(resume=True),
         "train_ensemble": lambda: main.run_train_ensemble(),
-        "backtest":       lambda: main.run_backtest(f.get("start") or None, f.get("end") or None),
+        "backtest":       lambda: main.run_backtest(f.get("start") or None, f.get("end") or None,
+                                                    params=_backtest_params(f)),
         "single_bt":      lambda: main.run_single_backtest(code=(f.get("code") or "").strip() or None,
                                                            years=_int(f.get("years"), 2)),
         "diagnose":       lambda: main.run_diagnose(stock_input=(f.get("code") or "").strip(),
@@ -534,9 +556,38 @@ def task_reports(task_id):
 
 @app.route("/control")
 def control():
-    from config import START_DATE
+    from config import (START_DATE, INIT_CAPITAL as _IC, BUY_THRESHOLD as _BT,
+                        SELL_THRESHOLD as _ST, STOP_LOSS_RATIO as _SL, TAKE_PROFIT_RATIO as _TP,
+                        MAX_HOLDINGS as _MH, MAX_POSITION_RATIO as _MP, TOP_N_BUY as _TN,
+                        RANK_SELL_BOTTOM as _RB, RELATIVE_RANK_MODE as _RR)
     _today = datetime.today().strftime("%Y%m%d")
     _start = START_DATE.replace("-", "")
+
+    def _num(name, label, default, step="any", w=90):
+        return (f"<label style='color:#8b949e'>{label}</label>"
+                f"<input name='{name}' type='number' step='{step}' "
+                f"placeholder='{default}' style='width:{w}px'>")
+
+    # 回测可调参数（留空=用 config 默认值，占位符显示默认）
+    _bt_params = (
+        "<details style='margin-top:10px;width:100%'>"
+        "<summary style='color:#58a6ff;cursor:pointer'>⚙ 可调参数（留空=用默认值）</summary>"
+        "<div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:10px'>"
+        + _num("buy_threshold",   "买入阈值", _BT)
+        + _num("sell_threshold",  "卖出阈值", _ST)
+        + _num("stop_loss",       "止损线",   _SL)
+        + _num("take_profit",     "止盈线",   _TP)
+        + _num("max_holdings",    "最大持仓", _MH, step="1", w=70)
+        + _num("max_position",    "单股仓位", _MP)
+        + _num("top_n_buy",       "每日买入数", _TN, step="1", w=80)
+        + _num("rank_sell_bottom", "排名卖出底部比例", _RB, w=120)
+        + (f"<label style='color:#8b949e'>选股模式</label>"
+           f"<select name='relative_rank' style='width:130px'>"
+           f"<option value=''>默认({'相对排名' if _RR else '绝对阈值'})</option>"
+           f"<option value='1'>相对排名(买Top-N)</option>"
+           f"<option value='0'>绝对阈值(超买入线)</option></select>")
+        + "</div></details>"
+    )
 
     def panel(action, fields_html=""):
         name, danger = _ACTION_META[action]
@@ -560,7 +611,8 @@ def control():
     bt_panels = (
         panel("backtest",
               f"<label style='color:#8b949e'>起始</label><input name='start' value='{_start}' style='width:110px'>"
-              f"<label style='color:#8b949e'>结束</label><input name='end' value='{_today}' style='width:110px'>")
+              f"<label style='color:#8b949e'>结束</label><input name='end' value='{_today}' style='width:110px'>"
+              + _bt_params)
         + panel("single_bt",
                 "<input name='code' placeholder='如 sh600519' style='width:130px'>"
                 "<label style='color:#8b949e'>年数</label><input name='years' value='2' style='width:60px'>")
@@ -582,6 +634,11 @@ def control():
     <div class="console-wrap">
       <h2 id="taskTitle" style="color:#58a6ff">运行控制台</h2>
       <p class="note" id="taskState">空闲中——点击上方任意「执行」按钮开始</p>
+      <div id="liveBox" style="display:none">
+        <h2 style="color:#58a6ff;margin:8px 0 4px">📈 训练实时曲线</h2>
+        """ + _CHARTJS + """
+        <canvas id="liveChart" height="90"></canvas>
+      </div>
       <div id="console">（任务输出会实时显示在这里）</div>
       <div id="reports"></div>
     </div>"""
@@ -591,7 +648,55 @@ def control():
     const consoleEl = document.getElementById('console');
     const stateEl   = document.getElementById('taskState');
     const reportsEl = document.getElementById('reports');
+    const liveBox   = document.getElementById('liveBox');
     let evtSource = null;
+
+    // ── 训练实时曲线（解析控制台每轮日志，无需后端改动）──
+    let lineBuf = '', liveChart = null;
+    function resetLive(){
+      lineBuf = '';
+      liveBox.style.display = 'none';
+      if(liveChart){ liveChart.destroy(); liveChart = null; }
+    }
+    function ensureChart(){
+      if(liveChart) return liveChart;
+      liveBox.style.display = 'block';
+      liveChart = new Chart(document.getElementById('liveChart'), {
+        type:'line',
+        data:{labels:[],datasets:[
+          {label:'损失',yAxisID:'yL',data:[],borderColor:'#58a6ff',pointRadius:0,tension:.2},
+          {label:'训练识别率',yAxisID:'yR',data:[],borderColor:'#3fb950',pointRadius:0,tension:.2},
+          {label:'验证识别率',yAxisID:'yR',data:[],borderColor:'#d29922',pointRadius:0,tension:.2}
+        ]},
+        options:{animation:false,interaction:{mode:'index',intersect:false},
+          scales:{
+            yL:{position:'left',title:{display:true,text:'损失',color:'#58a6ff'},
+                ticks:{color:'#8b949e'},grid:{color:'#21262d'}},
+            yR:{position:'right',min:0.3,max:1.0,title:{display:true,text:'识别率AUC',color:'#3fb950'},
+                ticks:{color:'#8b949e'},grid:{drawOnChartArea:false}},
+            x:{ticks:{color:'#8b949e',maxTicksLimit:15},grid:{color:'#21262d'}}
+          },
+          plugins:{legend:{labels:{color:'#c9d1d9'}}}
+        }
+      });
+      return liveChart;
+    }
+    function feedChart(text){
+      lineBuf += text;
+      let idx;
+      while((idx = lineBuf.indexOf('\\n')) >= 0){
+        const line = lineBuf.slice(0, idx); lineBuf = lineBuf.slice(idx+1);
+        const m = line.match(/第\\s*(\\d+)轮.*?损失.*?:\\s*([\\d.]+).*?训练识别率:\\s*([\\d.]+).*?验证识别率:\\s*([\\d.]+)/);
+        if(m){
+          const ch = ensureChart();
+          ch.data.labels.push(m[1]);
+          ch.data.datasets[0].data.push(parseFloat(m[2]));
+          ch.data.datasets[1].data.push(parseFloat(m[3]));
+          ch.data.datasets[2].data.push(parseFloat(m[4]));
+          ch.update('none');
+        }
+      }
+    }
 
     function setButtons(disabled){
       document.querySelectorAll('form[data-action] button').forEach(b=>b.disabled=disabled);
@@ -611,13 +716,16 @@ def control():
     function attach(taskId, name){
       consoleEl.textContent = '';
       reportsEl.innerHTML = '';
+      resetLive();
       stateEl.innerHTML = '<span class="spin"></span><span class="status-running">运行中：'+name+'</span>';
       setButtons(true);
       if(evtSource) evtSource.close();
       evtSource = new EventSource('/stream/'+taskId);
       evtSource.onmessage = e=>{
-        consoleEl.textContent += JSON.parse(e.data);
+        const txt = JSON.parse(e.data);
+        consoleEl.textContent += txt;
         consoleEl.scrollTop = consoleEl.scrollHeight;
+        feedChart(txt);
       };
       evtSource.addEventListener('done', e=>{
         const st = JSON.parse(e.data);

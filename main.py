@@ -118,9 +118,10 @@ def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = F
     logger.info("训练完成！")
 
 
-def run_backtest(start_str: str = None, end_str: str = None):
+def run_backtest(start_str: str = None, end_str: str = None, params: dict = None):
     """历史回测。start_str/end_str 为 None 时进入交互问答（命令行），
-    传入则直接使用（供网页调用，避免阻塞 stdin）。"""
+    传入则直接使用（供网页调用，避免阻塞 stdin）。
+    params 为可选的回测参数覆盖（买卖阈值/止损止盈等），供网页参数面板使用。"""
     import pandas as pd
     from data.loader import load_all_stocks
     from features.builder import load_scaler
@@ -182,7 +183,9 @@ def run_backtest(start_str: str = None, end_str: str = None):
 
     model  = load_best_available()
     scaler = load_scaler()
-    BacktestEngine(stock_data, model, scaler, benchmarks=benchmarks).run()
+    if params:
+        logger.info(f"使用自定义回测参数: {params}")
+    BacktestEngine(stock_data, model, scaler, benchmarks=benchmarks, params=params).run()
     logger.info("回测完成")
 
 

@@ -47,16 +47,34 @@ class BacktestEngine:
     """
 
     def __init__(self, stock_data: dict, model: LSTMModel, scaler=None,
-                 benchmarks: dict = None):
+                 benchmarks: dict = None, params: dict = None):
         """
         Args:
             benchmarks: {"上证指数": DataFrame(date,close), "沪深300": ..., ...}
+            params:     可选的回测参数覆盖（网页面板用），未提供的项回退到 config 默认值。
+                        支持键：init_capital, buy_threshold, sell_threshold, stop_loss,
+                        take_profit, max_holdings, max_position, top_n_buy,
+                        relative_rank, rank_sell_bottom
         """
         self.stock_data = stock_data
         self.model      = model
         self.scaler     = scaler
         self.benchmarks = benchmarks or {}
-        self.cash         = float(INIT_CAPITAL)
+
+        # 可调参数：优先使用传入值，否则回退到 config 默认
+        p = params or {}
+        self.init_capital    = float(p.get("init_capital",    INIT_CAPITAL))
+        self.buy_threshold   = float(p.get("buy_threshold",   BUY_THRESHOLD))
+        self.sell_threshold  = float(p.get("sell_threshold",  SELL_THRESHOLD))
+        self.stop_loss       = float(p.get("stop_loss",       STOP_LOSS_RATIO))
+        self.take_profit     = float(p.get("take_profit",     TAKE_PROFIT_RATIO))
+        self.max_holdings    = int(p.get("max_holdings",      MAX_HOLDINGS))
+        self.max_position    = float(p.get("max_position",    MAX_POSITION_RATIO))
+        self.top_n_buy       = int(p.get("top_n_buy",         TOP_N_BUY))
+        self.relative_rank   = bool(p.get("relative_rank",    RELATIVE_RANK_MODE))
+        self.rank_sell_bottom = float(p.get("rank_sell_bottom", RANK_SELL_BOTTOM))
+
+        self.cash         = float(self.init_capital)
         self.holdings     = {}
         self.today_bought = set()
         self.nav_curve    = []
@@ -111,7 +129,7 @@ class BacktestEngine:
         if self._is_limit_up(code, date):
             logger.debug(f"[{code}] 涨停，无法买入")
             return
-        max_amount = total_value * MAX_POSITION_RATIO
+        max_amount = total_value * self.max_position
         shares     = int(max_amount / price / 100) * 100
         if shares <= 0:
             return
@@ -178,17 +196,17 @@ class BacktestEngine:
         if signal_table:
             all_probs = list(signal_table.values())
             p_arr = np.array(all_probs)
-            above_buy  = (p_arr > BUY_THRESHOLD).sum()
+            above_buy  = (p_arr > self.buy_threshold).sum()
             above_half = (p_arr > 0.5).sum()
             logger.info(
                 f"概率分布 — min={p_arr.min():.3f}  mean={p_arr.mean():.3f}  "
-                f"max={p_arr.max():.3f}  >0.5: {above_half}条  >{BUY_THRESHOLD}: {above_buy}条"
+                f"max={p_arr.max():.3f}  >0.5: {above_half}条  >{self.buy_threshold}: {above_buy}条"
             )
             if above_buy == 0:
                 logger.warning(
-                    f"⚠️  没有任何信号超过买入阈值 {BUY_THRESHOLD}，将产生 0 笔交易。"
+                    f"⚠️  没有任何信号超过买入阈值 {self.buy_threshold}，将产生 0 笔交易。"
                     f"建议：① 重新训练模型（更多数据/更多轮次）"
-                    f"② 或在 config.py 中适当降低 BUY_THRESHOLD（当前 {BUY_THRESHOLD}）"
+                    f"② 或适当降低买入阈值（当前 {self.buy_threshold}）"
                 )
 
         return signal_table
@@ -233,18 +251,18 @@ class BacktestEngine:
                 if price <= 0:
                     continue
                 pnl = (price - self.holdings[code]["cost"]) / self.holdings[code]["cost"]
-                if pnl < STOP_LOSS_RATIO:
+                if pnl < self.stop_loss:
                     self._sell(code, price, date, reason="stop_loss")
-                elif pnl >= TAKE_PROFIT_RATIO:
+                elif pnl >= self.take_profit:
                     self._sell(code, price, date, reason="take_profit")
 
-            if RELATIVE_RANK_MODE:
+            if self.relative_rank:
                 sorted_codes = sorted(signals.keys(), key=lambda c: signals[c])
                 n = len(sorted_codes)
                 for i, code in enumerate(sorted_codes):
                     if code not in self.holdings or code in self.today_bought:
                         continue
-                    if (i / max(n, 1)) < RANK_SELL_BOTTOM:
+                    if (i / max(n, 1)) < self.rank_sell_bottom:
                         price = self._get_close(code, date)
                         if price > 0:
                             self._sell(code, price, date, reason="rank_signal")
@@ -252,7 +270,7 @@ class BacktestEngine:
                 for code in list(self.holdings.keys()):
                     if code in self.today_bought:
                         continue
-                    if signals.get(code, 0.5) < SELL_THRESHOLD:
+                    if signals.get(code, 0.5) < self.sell_threshold:
                         price = self._get_close(code, date)
                         if price > 0:
                             self._sell(code, price, date, reason="signal")
@@ -260,24 +278,24 @@ class BacktestEngine:
             # ── 买入判断 ────────────────────────────────
             ranked = sorted(signals.items(), key=lambda x: -x[1])
 
-            if RELATIVE_RANK_MODE:
+            if self.relative_rank:
                 candidates = [
                     (code, prob) for code, prob in ranked
                     if code not in self.holdings and code not in self.today_bought
-                ][:TOP_N_BUY]
+                ][:self.top_n_buy]
                 for code, prob in candidates:
-                    if len(self.holdings) >= MAX_HOLDINGS:
+                    if len(self.holdings) >= self.max_holdings:
                         break
                     price = self._get_close(code, date)
                     if price > 0:
                         self._buy(code, price, date, total_value)
             else:
                 for code, prob in ranked:
-                    if len(self.holdings) >= MAX_HOLDINGS:
+                    if len(self.holdings) >= self.max_holdings:
                         break
                     if code in self.holdings:
                         continue
-                    if prob > BUY_THRESHOLD:
+                    if prob > self.buy_threshold:
                         price = self._get_close(code, date)
                         if price > 0:
                             self._buy(code, price, date, total_value)
@@ -292,7 +310,7 @@ class BacktestEngine:
                 continue
             s = df.set_index("date")["close"].reindex(nav_df["date"]).ffill().bfill()
             if s.notna().any() and s.iloc[0] > 0:
-                bm_navs[name] = (s / s.iloc[0]) * INIT_CAPITAL
+                bm_navs[name] = (s / s.iloc[0]) * self.init_capital
 
         hs300_nav = bm_navs.get("沪深300")
 
@@ -365,7 +383,7 @@ class BacktestEngine:
         nav_series = nav_df.set_index("date")["nav"]
 
         # ── 净值曲线（AlphaQuant + 5个基准指数）────────
-        ax_nav.plot(nav_df["date"], nav_series / INIT_CAPITAL,
+        ax_nav.plot(nav_df["date"], nav_series / self.init_capital,
                     linewidth=2.2, label="AlphaQuant", color="#2196F3", zorder=5)
 
         bm_colors = {
@@ -377,7 +395,7 @@ class BacktestEngine:
         }
         for name, bm_nav in bm_navs.items():
             color, ls = bm_colors.get(name, ("#888888", "--"))
-            ax_nav.plot(nav_df["date"], bm_nav / INIT_CAPITAL,
+            ax_nav.plot(nav_df["date"], bm_nav / self.init_capital,
                         linewidth=1.2, label=name, color=color,
                         linestyle=ls, alpha=0.75)
 
