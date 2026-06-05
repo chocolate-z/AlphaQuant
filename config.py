@@ -144,5 +144,7 @@ CPU_THREAD_RATIO    = 0.5
 DAILY_RUN_TIME     = "15:30"     # 每日触发时间
 
 # ── 看板 ────────────────────────────────────────────
-DASHBOARD_HOST = "127.0.0.1"
-DASHBOARD_PORT = 5000
+# 可用环境变量覆盖：服务器上想公网访问，设 DASHBOARD_HOST=0.0.0.0（见 deploy.md）。
+# 这样不改代码、git pull 也不冲突；本地默认仍是 127.0.0.1（只本机可访问，安全）。
+DASHBOARD_HOST = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "5000"))
