@@ -118,7 +118,9 @@ def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = F
     logger.info("训练完成！")
 
 
-def run_backtest():
+def run_backtest(start_str: str = None, end_str: str = None):
+    """历史回测。start_str/end_str 为 None 时进入交互问答（命令行），
+    传入则直接使用（供网页调用，避免阻塞 stdin）。"""
     import pandas as pd
     from data.loader import load_all_stocks
     from features.builder import load_scaler
@@ -139,9 +141,13 @@ def run_backtest():
     _default_end   = datetime.today().strftime("%Y%m%d")
     _default_start = START_DATE.replace("-", "")
 
-    print()
-    start_str = _ask("回测起始日期（格式 YYYYMMDD，默认 20150101）", _default_start)
-    end_str   = _ask(f"回测结束日期（格式 YYYYMMDD，默认 {_default_end}）", _default_end)
+    if start_str is None:
+        print()
+        start_str = _ask("回测起始日期（格式 YYYYMMDD，默认 20150101）", _default_start)
+    if end_str is None:
+        end_str = _ask(f"回测结束日期（格式 YYYYMMDD，默认 {_default_end}）", _default_end)
+    start_str = start_str or _default_start
+    end_str   = end_str or _default_end
 
     for _label, _val in [("起始日期", start_str), ("结束日期", end_str)]:
         try:
@@ -241,8 +247,9 @@ def run_diagnose(stock_input: str = None, cost: float = None):
         print_batch_summary(results)
 
 
-def run_single_backtest():
-    """单股回测：绘制K线图 + 模型买卖点标注。"""
+def run_single_backtest(code: str = None, years: int = None):
+    """单股回测：绘制K线图 + 模型买卖点标注。
+    code/years 为 None 时进入交互问答；传入则直接使用（供网页调用）。"""
     from data.loader import load_stock_data, _fetch_kline, get_stock_name
     from features.builder import build_sequences
     from models.lstm_model import load_best_available
@@ -254,11 +261,12 @@ def run_single_backtest():
         print("\n  ⚠ 模型文件不存在，请先训练模型\n")
         return
 
-    print()
-    code = _ask("输入股票代码（如 sh600519）").strip()
+    if code is None:
+        print()
+        code = _ask("输入股票代码（如 sh600519）").strip()
     if not code:
         return
-    years_str = _ask("回测多少年历史（默认 2）", "2")
+    years_str = str(years) if years is not None else _ask("回测多少年历史（默认 2）", "2")
     try:
         years = int(years_str)
     except ValueError:
@@ -601,23 +609,14 @@ def run_show_config():
     print("\n  提示：直接编辑 config.py 修改参数，重启程序后生效\n")
 
 
-def run_reset():
+def reset_account():
+    """实际执行账户重置（无交互，供网页/命令行复用）。"""
     import json
     from config import LOGS_DIR, INIT_CAPITAL
 
     state_file   = os.path.join(LOGS_DIR, "account_state.json")
     suspend_file = os.path.join(LOGS_DIR, "suspend_state.json")
     peak_file    = os.path.join(LOGS_DIR, "peak_assets.json")
-
-    print()
-    print(f"  ⚠️  此操作将重置虚拟账户：")
-    print(f"     · 现金恢复为 ¥{INIT_CAPITAL:,.0f}")
-    print(f"     · 清空所有持仓、暂停状态和峰值记录")
-    print()
-
-    if not _confirm("确认重置"):
-        print("  已取消")
-        return
 
     new_state = {
         "cash": float(INIT_CAPITAL),
@@ -633,6 +632,23 @@ def run_reset():
             os.remove(fp)
 
     print(f"\n  ✓ 账户已重置，初始资金 ¥{INIT_CAPITAL:,.0f}")
+
+
+def run_reset():
+    """命令行交互式重置（带确认）。"""
+    from config import INIT_CAPITAL
+
+    print()
+    print(f"  ⚠️  此操作将重置虚拟账户：")
+    print(f"     · 现金恢复为 ¥{INIT_CAPITAL:,.0f}")
+    print(f"     · 清空所有持仓、暂停状态和峰值记录")
+    print()
+
+    if not _confirm("确认重置"):
+        print("  已取消")
+        return
+
+    reset_account()
 
 
 # ── 交互式菜单主循环 ──────────────────────────────────────────────────

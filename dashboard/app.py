@@ -3,14 +3,16 @@
 import os
 import csv
 import json
+import time
 import logging
 from datetime import datetime
 
-from flask import Flask, request
+from flask import Flask, request, Response, jsonify
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import LOGS_DIR, DASHBOARD_HOST, DASHBOARD_PORT, INIT_CAPITAL, SIGNAL_CACHE_FILE
+from dashboard.tasks import manager
 
 logger = logging.getLogger(__name__)
 app    = Flask(__name__)
@@ -101,6 +103,21 @@ button:hover{background:#388bfd}
 .filter-bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
 .note{color:#8b949e;font-size:.85em;margin:8px 0}
 canvas{max-width:100%}
+.panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px;margin:14px 0}
+.panel h2{margin:0 0 4px 0;color:#f0f6fc;font-size:1em}
+.panel .desc{color:#8b949e;font-size:.82em;margin:0 0 12px 0}
+.panel form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+button.danger{background:#a13232}button.danger:hover{background:#c44}
+button:disabled{background:#30363d;color:#8b949e;cursor:not-allowed}
+#console{background:#010409;border:1px solid #30363d;border-radius:8px;padding:14px;
+  font-family:'Consolas','Courier New',monospace;font-size:.85em;color:#c9d1d9;
+  white-space:pre-wrap;word-break:break-all;height:420px;overflow-y:auto;margin-top:8px}
+.console-wrap{position:sticky;bottom:0}
+.status-running{color:#d29922}.status-done{color:#3fb950}.status-error{color:#f85149}
+.spin{display:inline-block;width:10px;height:10px;border:2px solid #d29922;border-top-color:transparent;
+  border-radius:50%;animation:sp 0.8s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
 </style>"""
 
 _NAV = """
@@ -111,6 +128,7 @@ _NAV = """
   <a href="/signals">今日信号</a>
   <a href="/trades">历史交易</a>
   <a href="/performance">模型表现</a>
+  <a href="/control">⚙ 操作中心</a>
 </nav>"""
 
 _CHARTJS = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>'
@@ -384,7 +402,214 @@ def performance():
     return _page("模型表现", f"<h1>模型表现</h1>{cards}{chart}")
 
 
+# ── 操作中心（把命令行菜单搬到网页）────────────────────────────────────
+
+# 操作名 → (中文名, 是否危险)，用于前端展示
+_ACTION_META = {
+    "train_full":     ("训练模型（完整模式）", False),
+    "train_quick":    ("训练模型（快速模式）", False),
+    "train_resume":   ("增量训练（继续学习）", False),
+    "train_ensemble": ("集成训练（多模型）",   False),
+    "backtest":       ("历史回测",            False),
+    "single_bt":      ("单股买卖点图",         False),
+    "diagnose":       ("个股诊断",            False),
+    "portfolio_diag": ("持仓一键诊断",         False),
+    "export":         ("导出今日信号 Excel",   False),
+    "signal":         ("刷新今日信号",         False),
+    "config":         ("查看当前配置",         False),
+    "reset":          ("重置虚拟账户",         True),
+}
+
+
+def _build_action(action: str, f):
+    """根据表单参数构造对应的无交互调用闭包。返回 None 表示未知操作。"""
+    import main
+
+    def _float(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    def _int(x, default):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return default
+
+    table = {
+        "train_full":     lambda: main.run_train(quick=False, force_refresh=(f.get("refresh") == "1")),
+        "train_quick":    lambda: main.run_train(quick=True),
+        "train_resume":   lambda: main.run_train(resume=True),
+        "train_ensemble": lambda: main.run_train_ensemble(),
+        "backtest":       lambda: main.run_backtest(f.get("start") or None, f.get("end") or None),
+        "single_bt":      lambda: main.run_single_backtest(code=(f.get("code") or "").strip() or None,
+                                                           years=_int(f.get("years"), 2)),
+        "diagnose":       lambda: main.run_diagnose(stock_input=(f.get("code") or "").strip(),
+                                                    cost=_float(f.get("cost"))),
+        "portfolio_diag": lambda: main.run_portfolio_diagnose(),
+        "export":         lambda: main.run_export_excel(),
+        "signal":         lambda: main.run_signal(),
+        "config":         lambda: main.run_show_config(),
+        "reset":          lambda: main.reset_account(),
+    }
+    return table.get(action)
+
+
+@app.route("/run/<action>", methods=["POST"])
+def run_action(action):
+    if manager.is_busy():
+        cur = manager.current()
+        return jsonify({"ok": False, "error": f"已有任务在运行：{cur.name if cur else ''}"}), 409
+    func = _build_action(action, request.form)
+    if func is None:
+        return jsonify({"ok": False, "error": "未知操作"}), 400
+    name = _ACTION_META.get(action, (action, False))[0]
+    task_id = manager.start(name, func)
+    if task_id is None:
+        return jsonify({"ok": False, "error": "已有任务在运行"}), 409
+    return jsonify({"ok": True, "task_id": task_id, "name": name})
+
+
+@app.route("/task_status")
+def task_status():
+    """供页面加载时判断是否有任务在跑，便于自动重新挂接控制台。"""
+    cur = manager.current()
+    if cur is not None and cur.status == "running":
+        return jsonify({"busy": True, "task_id": cur.id, "name": cur.name})
+    return jsonify({"busy": False})
+
+
+@app.route("/stream/<task_id>")
+def stream(task_id):
+    task = manager.get(task_id)
+    if task is None:
+        return "no such task", 404
+
+    def gen():
+        i = 0
+        while True:
+            n = len(task.lines)
+            while i < n:
+                yield f"data: {json.dumps(task.lines[i])}\n\n"
+                i += 1
+            if task.status != "running" and i >= len(task.lines):
+                yield f"event: done\ndata: {json.dumps(task.status)}\n\n"
+                break
+            time.sleep(0.25)
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/control")
+def control():
+    from config import START_DATE
+    _today = datetime.today().strftime("%Y%m%d")
+    _start = START_DATE.replace("-", "")
+
+    def panel(action, fields_html=""):
+        name, danger = _ACTION_META[action]
+        btn_cls = "danger" if danger else ""
+        confirm = (" onsubmit=\"return confirm('确认执行：" + name + "？')\""
+                   if danger else "")
+        return (f"<div class='panel'><h2>{name}</h2>"
+                f"<form data-action='{action}'{confirm}>{fields_html}"
+                f"<button class='{btn_cls}' type='submit'>执行</button></form></div>")
+
+    # ── 训练类 ──
+    train_panels = (
+        panel("train_full",
+              "<label style='color:#8b949e'><input type='checkbox' name='refresh' value='1'> 强制重新下载数据</label>")
+        + panel("train_quick")
+        + panel("train_resume")
+        + panel("train_ensemble")
+    )
+
+    # ── 回测类 ──
+    bt_panels = (
+        panel("backtest",
+              f"<label style='color:#8b949e'>起始</label><input name='start' value='{_start}' style='width:110px'>"
+              f"<label style='color:#8b949e'>结束</label><input name='end' value='{_today}' style='width:110px'>")
+        + panel("single_bt",
+                "<input name='code' placeholder='如 sh600519' style='width:130px'>"
+                "<label style='color:#8b949e'>年数</label><input name='years' value='2' style='width:60px'>")
+    )
+
+    # ── 工具类 ──
+    tool_panels = (
+        panel("diagnose",
+              "<input name='code' placeholder='代码，逗号分隔多只' style='width:200px'>"
+              "<input name='cost' placeholder='成本价(可选)' style='width:110px'>")
+        + panel("portfolio_diag")
+        + panel("signal")
+        + panel("export")
+        + panel("config")
+        + panel("reset")
+    )
+
+    console = """
+    <div class="console-wrap">
+      <h2 id="taskTitle" style="color:#58a6ff">运行控制台</h2>
+      <p class="note" id="taskState">空闲中——点击上方任意「执行」按钮开始</p>
+      <div id="console">（任务输出会实时显示在这里）</div>
+    </div>"""
+
+    script = """
+    <script>
+    const consoleEl = document.getElementById('console');
+    const stateEl   = document.getElementById('taskState');
+    let evtSource = null;
+
+    function setButtons(disabled){
+      document.querySelectorAll('form[data-action] button').forEach(b=>b.disabled=disabled);
+    }
+    function attach(taskId, name){
+      consoleEl.textContent = '';
+      stateEl.innerHTML = '<span class="spin"></span><span class="status-running">运行中：'+name+'</span>';
+      setButtons(true);
+      if(evtSource) evtSource.close();
+      evtSource = new EventSource('/stream/'+taskId);
+      evtSource.onmessage = e=>{
+        consoleEl.textContent += JSON.parse(e.data);
+        consoleEl.scrollTop = consoleEl.scrollHeight;
+      };
+      evtSource.addEventListener('done', e=>{
+        const st = JSON.parse(e.data);
+        stateEl.innerHTML = st==='done'
+          ? '<span class="status-done">✓ 已完成</span>'
+          : '<span class="status-error">✗ 出错（详见上方输出）</span>';
+        setButtons(false);
+        evtSource.close();
+      });
+      evtSource.onerror = ()=>{ setButtons(false); };
+    }
+    document.querySelectorAll('form[data-action]').forEach(form=>{
+      form.addEventListener('submit', async ev=>{
+        ev.preventDefault();
+        const action = form.dataset.action;
+        const res = await fetch('/run/'+action, {method:'POST', body:new FormData(form)});
+        const data = await res.json();
+        if(!data.ok){ stateEl.innerHTML='<span class="status-error">'+data.error+'</span>'; return; }
+        attach(data.task_id, data.name);
+      });
+    });
+    // 页面加载时若已有任务在跑，自动挂接
+    fetch('/task_status').then(r=>r.json()).then(d=>{ if(d.busy) attach(d.task_id, d.name); });
+    </script>"""
+
+    body = (f"<h1>⚙ 操作中心</h1>"
+            f"<p class='note'>所有命令行菜单操作均可在此执行，耗时任务（训练/回测）会在下方控制台实时滚动日志。"
+            f"同一时刻只允许一个任务运行。</p>"
+            f"<h2>训练</h2><div class='grid'>{train_panels}</div>"
+            f"<h2>回测</h2><div class='grid'>{bt_panels}</div>"
+            f"<h2>工具</h2><div class='grid'>{tool_panels}</div>"
+            f"{console}{script}")
+    return _page("操作中心", body)
+
+
 def start_dashboard():
     """启动 Flask 看板服务。"""
     print(f"[AlphaQuant] 看板启动: http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
-    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False, use_reloader=False)
+    app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False,
+            use_reloader=False, threaded=True)
