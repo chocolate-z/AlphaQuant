@@ -194,6 +194,13 @@ def run_daily_execution():
             return (_dt.today() - _dt.strptime(sd, "%Y-%m-%d")).days < COOLDOWN_DAYS * 1.5
         except Exception:
             return False
+    def liquid_now(c):
+        # 按该股**自身最新交易日**判定流动性：各股缓存更新进度可能不同（如今日只更新了部分），
+        # 用全局 ref 会误杀数据停在昨日的股票。
+        df = stock_data.get(c)
+        if df is None or len(df) == 0:
+            return False
+        return eng._is_liquid(c, df["date"].iloc[-1])
 
     def do_sell(c, reason):
         if c in account.today_bought:
@@ -235,7 +242,7 @@ def run_daily_execution():
         for c in sorted(signals, key=lambda c: -signals[c]):
             if len(account.holdings) >= MAX_HOLDINGS:
                 break
-            if c in account.holdings or in_cooldown(c) or not eng._is_liquid(c, ref):
+            if c in account.holdings or in_cooldown(c) or not liquid_now(c):
                 continue
             p = price_of(c)
             if p <= 0:
