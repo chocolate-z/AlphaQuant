@@ -18,6 +18,7 @@ from config import (
     WINDOW_SIZE, BUY_THRESHOLD, SELL_THRESHOLD,
     STOP_LOSS_RATIO, TAKE_PROFIT_RATIO, MAX_POSITION_RATIO, MAX_HOLDINGS,
     RELATIVE_RANK_MODE, TOP_N_BUY, RANK_SELL_BOTTOM,
+    MIN_HOLD_DAYS, COOLDOWN_DAYS,
     REPORTS_DIR,
 )
 from models.lstm_model import LSTMModel
@@ -73,10 +74,21 @@ class BacktestEngine:
         self.top_n_buy       = int(p.get("top_n_buy",         TOP_N_BUY))
         self.relative_rank   = bool(p.get("relative_rank",    RELATIVE_RANK_MODE))
         self.rank_sell_bottom = float(p.get("rank_sell_bottom", RANK_SELL_BOTTOM))
+        # 开始交易日：信号仍用完整历史预计算（特征 lookback 干净），但只从该日起
+        # 建仓/记净值。用于「样本外回测」——模型训练截止日之后才开仓，结果才诚实。
+        self.start_date = pd.Timestamp(p["start_date"]) if p.get("start_date") else None
+        # 卖出冷却：刚卖出的股票在 cooldown_days 个交易日内不再买入，杜绝「当天/隔天
+        # 卖了又买」的来回打脸式刷单（弱信号下排名抖动会导致这种交易，白送手续费）。
+        self.cooldown_days = int(p.get("cooldown_days", COOLDOWN_DAYS))
+        # 最短持有期：信号/排名类卖出至少持有 min_hold_days 个交易日才执行（止损/止盈
+        # 不受限，可随时触发）。弱信号下排名每天抖动，最短持有期能大幅降低换手与手续费。
+        self.min_hold_days = int(p.get("min_hold_days", MIN_HOLD_DAYS))
 
         self.cash         = float(self.init_capital)
         self.holdings     = {}
         self.today_bought = set()
+        self.today_sold   = set()
+        self.sold_on      = {}      # code -> 最近卖出日，用于冷却判断
         self.nav_curve    = []
         self.trades       = []
 
@@ -151,6 +163,11 @@ class BacktestEngine:
     def _sell(self, code: str, price: float, date: pd.Timestamp, reason: str = "signal"):
         if code not in self.holdings:
             return
+        # 最短持有期：仅对信号/排名类卖出生效；止损/止盈属风控，任何时候都能卖
+        if reason in ("signal", "rank_signal") and self.min_hold_days > 0:
+            bd = self.holdings[code].get("buy_date")
+            if bd is not None and (date - bd).days < self.min_hold_days * 1.5:
+                return
         if self._is_limit_down(code, date):
             logger.debug(f"[{code}] 跌停，无法卖出（{reason}）")
             return
@@ -164,6 +181,20 @@ class BacktestEngine:
             "reason": reason,
         })
         del self.holdings[code]
+        self.today_sold.add(code)
+        self.sold_on[code] = date
+
+    def _in_cooldown(self, code: str, date: pd.Timestamp) -> bool:
+        """刚卖出的股票是否还在冷却期内（冷却期内不再买入，防来回刷单）。"""
+        if code in self.today_sold:
+            return True
+        if self.cooldown_days <= 0:
+            return False
+        last = self.sold_on.get(code)
+        if last is None:
+            return False
+        # 自然日近似交易日：cooldown_days 个交易日 ≈ cooldown_days*1.5 自然日（含周末）
+        return (date - last).days < self.cooldown_days * 1.5
 
     # ── 信号预计算（核心优化）──────────────────────────
 
@@ -230,10 +261,19 @@ class BacktestEngine:
             print("\n  ⚠ 无有效股票数据，无法执行回测。请检查网络连接后重试。\n")
             return {}
 
+        # 样本外回测：信号已用完整历史预计算，这里把交易/净值起点推到 start_date 之后
+        if self.start_date is not None:
+            kept = [d for d in all_dates if d >= self.start_date]
+            if kept:
+                logger.info(f"样本外模式：仅从 {self.start_date.date()} 起开仓计净值"
+                            f"（之前 {len(all_dates) - len(kept)} 个交易日仅用于特征 lookback）")
+                all_dates = kept
+
         logger.info(f"回测区间: {all_dates[0].date()} ~ {all_dates[-1].date()}，共 {len(all_dates)} 个交易日")
 
         for date in all_dates:
             self.today_bought = set()
+            self.today_sold   = set()
 
             signals = {
                 code: signal_table.get((code, date), 0.5)
@@ -282,6 +322,7 @@ class BacktestEngine:
                 candidates = [
                     (code, prob) for code, prob in ranked
                     if code not in self.holdings and code not in self.today_bought
+                    and not self._in_cooldown(code, date)   # 刚卖出的不立刻买回，杜绝刷单
                 ][:self.top_n_buy]
                 for code, prob in candidates:
                     if len(self.holdings) >= self.max_holdings:
@@ -293,7 +334,7 @@ class BacktestEngine:
                 for code, prob in ranked:
                     if len(self.holdings) >= self.max_holdings:
                         break
-                    if code in self.holdings:
+                    if code in self.holdings or self._in_cooldown(code, date):
                         continue
                     if prob > self.buy_threshold:
                         price = self._get_close(code, date)
@@ -332,17 +373,16 @@ class BacktestEngine:
         # 获取股票名称
         df["name"] = df["code"].apply(lambda c: get_stock_name(c)[:5])
 
-        # 计算每笔卖出盈亏（匹配最近一次买入）
+        # 计算每笔卖出盈亏（匹配最近一次买入）。直接用当前行索引赋值，避免在 iterrows
+        # 里再做 df[...] 过滤——那是 O(n²)，高换手回测下几千笔会卡住好几分钟。
         pnl_map = {}
-        for _, row in df.iterrows():
+        for i, row in df.iterrows():
             code = row["code"]
             if row["action"] == "buy":
                 pnl_map[code] = row["price"]
             elif row["action"] == "sell" and code in pnl_map:
                 buy_p = pnl_map.pop(code)
-                idx = df[(df["code"] == code) & (df["action"] == "sell") &
-                         (df["date"] == row["date"])].index
-                df.loc[idx, "pnl_pct"] = (row["price"] / buy_p - 1) * 100
+                df.loc[i, "pnl_pct"] = (row["price"] / buy_p - 1) * 100
 
         # 终端输出
         print("\n" + "=" * 80)
