@@ -66,6 +66,7 @@ def _print_menu():
     _box_line("  1  训练模型（完整模式，全部股票）")
     _box_line("  2  训练模型（快速模式，随机10只/近2年）")
     _box_line("  3  继续训练（在已有模型基础上增量学习）")
+    _box_line("  f  集成训练（多模型，提升稳定性）")
     _box_line("  4  历史回测")
     _box_sep()
     _box_line("  【实盘 & 看板】")
@@ -121,7 +122,7 @@ def run_backtest():
     import pandas as pd
     from data.loader import load_all_stocks
     from features.builder import load_scaler
-    from models.lstm_model import load_model
+    from models.lstm_model import load_best_available
     from backtest.engine import BacktestEngine
     from data.index_fetcher import fetch_all_benchmarks
     from config import MODEL_SAVE_DIR, START_DATE, RELATIVE_RANK_MODE, WINDOW_SIZE
@@ -173,7 +174,7 @@ def run_backtest():
         print("  ✗ 无有效数据，请先运行训练（选项 1）下载股票数据后再回测")
         return
 
-    model  = load_model(model_path)
+    model  = load_best_available()
     scaler = load_scaler()
     BacktestEngine(stock_data, model, scaler, benchmarks=benchmarks).run()
     logger.info("回测完成")
@@ -244,7 +245,7 @@ def run_single_backtest():
     """单股回测：绘制K线图 + 模型买卖点标注。"""
     from data.loader import load_stock_data, _fetch_kline, get_stock_name
     from features.builder import build_sequences
-    from models.lstm_model import load_model
+    from models.lstm_model import load_best_available
     from models.trainer import predict_proba
     from config import MODEL_SAVE_DIR, REPORTS_DIR, START_DATE, BUY_THRESHOLD, SELL_THRESHOLD
 
@@ -284,7 +285,7 @@ def run_single_backtest():
         print("\n  ✗ 数据量不足以构建特征序列\n")
         return
 
-    model = load_model(model_path)
+    model = load_best_available()
     probs = predict_proba(model, X)
 
     # 对齐日期
@@ -407,7 +408,7 @@ def run_export_excel():
     """导出今日信号到 Excel 文件（Sheet1: 今日信号，Sheet2: 交易明细）。"""
     from data.loader import load_all_stocks, get_stock_name
     from features.builder import build_sequences
-    from models.lstm_model import load_model
+    from models.lstm_model import load_best_available
     from models.trainer import predict_proba
     from config import MODEL_SAVE_DIR, REPORTS_DIR, BUY_THRESHOLD, SELL_THRESHOLD
 
@@ -423,7 +424,7 @@ def run_export_excel():
         return
 
     print(f"  已加载 {len(stock_data)} 只股票，正在推理信号...")
-    model = load_model(model_path)
+    model = load_best_available()
     signals = {}
     for code, df in stock_data.items():
         if df is None or len(df) < 35:
@@ -493,6 +494,29 @@ def run_export_excel():
             writer.writeheader()
             writer.writerows(rows)
         print(f"\n  openpyxl 未安装，已保存为 CSV: {csv_path}\n")
+
+
+def run_train_ensemble():
+    """训练集成模型（多个不同随机种子，取平均提升稳定性）。"""
+    from data.loader import load_all_stocks
+    from features.builder import build_all_stocks
+    from models.trainer import train_ensemble
+    from config import ENSEMBLE_N_MODELS
+
+    logger.info(f"=== 集成训练（共 {ENSEMBLE_N_MODELS} 个模型）===")
+
+    print("\n  正在加载数据...")
+    stock_data = load_all_stocks()
+    X, y, _ = build_all_stocks(stock_data)
+
+    if len(X) == 0:
+        logger.error("特征构建失败，数据不足")
+        return
+
+    logger.info(f"特征维度: {X.shape}，正样本比例: {y.mean():.3f}")
+    print(f"\n  数据加载完成，共 {len(X)} 条样本，开始训练 {ENSEMBLE_N_MODELS} 个模型...\n")
+    train_ensemble(X, y)
+    logger.info("集成训练完成！")
 
 
 def run_portfolio_diagnose():
@@ -618,6 +642,7 @@ def interactive_menu():
         "1": lambda: run_train(quick=False, force_refresh=_confirm("是否强制重新下载数据")),
         "2": lambda: (_clear(), print("\n  快速模式：随机抽取 10 只股票，近 2 年历史\n"), run_train(quick=True)),
         "3": lambda: (_clear(), print("\n  增量训练：加载已有模型，在原基础上继续学习\n"), run_train(resume=True)),
+        "f": run_train_ensemble,
         "4": run_backtest,
         "5": run_paper,
         "6": run_dashboard,

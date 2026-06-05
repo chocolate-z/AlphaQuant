@@ -12,7 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import MODEL_SAVE_DIR, STOP_LOSS_RATIO, LABEL_THRESHOLD
 from data.loader import load_stock_data, get_stock_name
 from features.builder import build_inference_sequence, load_scaler
-from models.lstm_model import load_model
+from models.lstm_model import load_best_available
+from models.trainer import predict_proba
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +24,7 @@ _cached_model = None
 def _get_model():
     global _cached_model
     if _cached_model is None:
-        model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
-        if os.path.exists(model_path):
-            _cached_model = load_model(model_path)
+        _cached_model = load_best_available()   # 集成模型（列表）或单模型
     return _cached_model
 
 
@@ -142,17 +141,13 @@ def diagnose(stock_code: str, holdings_cost: float = None) -> dict:
     turnover      = float(latest.get("turnover",   0))
     main_inflow   = float(latest.get("main_net_inflow", 0))
 
-    # AI 概率（复用缓存模型，避免批量诊断时重复加载）
+    # AI 概率（使用集成或单模型；复用缓存避免重复加载）
     ai_prob = 0.5
     try:
-        model  = _get_model()
-        scaler = load_scaler()
+        model = _get_model()
         if model is not None:
-            X = build_inference_sequence(df, scaler)
-            X_t = torch.tensor(X, dtype=torch.float32)
-            model.eval()
-            with torch.no_grad():
-                ai_prob = float(model(X_t).item())
+            X       = build_inference_sequence(df, load_scaler())
+            ai_prob = float(predict_proba(model, X)[0])
     except Exception as e:
         logger.warning(f"AI 推理失败（使用默认值 0.5）: {e}")
 

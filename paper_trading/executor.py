@@ -17,7 +17,8 @@ from config import (
 from data.realtime import fetch_all_realtime, update_all_caches, is_trade_day
 from data.loader import load_all_stocks, load_stock_data
 from features.builder import build_inference_sequence, load_scaler
-from models.lstm_model import load_model
+from models.lstm_model import load_model, load_best_available
+from models.trainer import predict_proba
 from paper_trading.account import VirtualAccount
 from paper_trading.risk import RiskManager
 from paper_trading.logger import TradeLogger
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 def _compute_signals_batch(model, scaler) -> dict:
     """
     批量推理所有股票信号（一次性加载所有数据，避免重复 IO）。
+    model 可以是单模型或集成模型列表，predict_proba 自动处理。
 
     Returns:
         {stock_code: probability}
@@ -39,11 +41,8 @@ def _compute_signals_batch(model, scaler) -> dict:
             signals[code] = 0.5
             continue
         try:
-            X   = build_inference_sequence(df, scaler)
-            X_t = torch.tensor(X, dtype=torch.float32)
-            model.eval()
-            with torch.no_grad():
-                signals[code] = float(model(X_t).item())
+            X = build_inference_sequence(df, scaler)
+            signals[code] = float(predict_proba(model, X)[0])
         except Exception as e:
             logger.warning(f"[{code}] 推理失败: {e}")
             signals[code] = 0.5
@@ -82,7 +81,7 @@ def run_daily_execution():
         logger.error("模型未找到，请先运行 python main.py --mode train")
         return
 
-    model  = load_model(model_path)
+    model  = load_best_available()
     scaler = load_scaler()
 
     account      = VirtualAccount()
@@ -191,8 +190,8 @@ def get_current_signals() -> dict:
         logger.error("模型未找到，请先训练")
         return {}
 
-    model  = load_model(model_path)
-    scaler = load_scaler()
+    model   = load_best_available()
+    scaler  = load_scaler()
     signals = _compute_signals_batch(model, scaler)
     _save_signal_cache(signals)
     return signals

@@ -1,12 +1,13 @@
 # 序列模型：两层 GRU + Attention + FC，预测未来5日内涨幅超5%的概率
 # GRU 比 LSTM 参数少 25%，CPU 上速度快 25~30%，精度相当
 
+import json
 import torch
 import torch.nn as nn
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import LSTM_HIDDEN1, LSTM_HIDDEN2, FC_HIDDEN, DROPOUT, FEATURE_DIM
+from config import LSTM_HIDDEN1, LSTM_HIDDEN2, FC_HIDDEN, DROPOUT, FEATURE_DIM, MODEL_SAVE_DIR
 
 
 class LSTMModel(nn.Module):
@@ -85,3 +86,40 @@ def load_model(model_path: str, device: str = "cpu") -> LSTMModel:
     model.load_state_dict(state)
     model.eval()
     return model
+
+
+def load_ensemble(device: str = "cpu") -> list:
+    """
+    加载集成模型列表。如果集成文件不存在则返回空列表。
+    推理时对所有模型的概率取平均，显著降低单模型方差。
+    """
+    manifest_path = os.path.join(MODEL_SAVE_DIR, "ensemble_manifest.json")
+    if not os.path.exists(manifest_path):
+        return []
+    try:
+        with open(manifest_path) as f:
+            info = json.load(f)
+        models = []
+        for i in range(info.get("n_models", 0)):
+            p = os.path.join(MODEL_SAVE_DIR, f"lstm_ensemble_{i}.pt")
+            if os.path.exists(p):
+                models.append(load_model(p, device))
+        if models:
+            return models
+    except Exception:
+        pass
+    return []
+
+
+def load_best_available(device: str = "cpu"):
+    """
+    统一加载入口：优先返回集成模型列表，否则返回单模型，否则返回 None。
+    predict_proba() 已支持接收列表，所有调用方无需关心具体形式。
+    """
+    ens = load_ensemble(device)
+    if ens:
+        return ens
+    p = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
+    if os.path.exists(p):
+        return load_model(p, device)
+    return None

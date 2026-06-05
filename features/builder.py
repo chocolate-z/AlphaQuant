@@ -10,7 +10,8 @@ import joblib
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (WINDOW_SIZE, LABEL_HORIZON, LABEL_THRESHOLD, MODEL_SAVE_DIR,
-                    TRAIN_RATIO, DATA_CACHE_DIR, START_DATE)
+                    TRAIN_RATIO, DATA_CACHE_DIR, START_DATE,
+                    USE_EXCESS_LABEL, EXCESS_THRESHOLD)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ def _load_market_df() -> pd.DataFrame:
         out["mkt_ret_5d"]   = c.pct_change(5).fillna(0).clip(-0.2, 0.2)
         ma20 = c.rolling(20, min_periods=1).mean()
         out["mkt_ma20_dev"] = (c / ma20 - 1).fillna(0).clip(-0.2, 0.2)
+        out["mkt_close"]    = c.values   # 原始收盘价，供超额收益标签使用（不进 FEATURE_NAMES）
 
         out.to_csv(cache_file, index=False)
         logger.info(f"市场特征已加载（沪深300，{len(out)} 个交易日）")
@@ -210,16 +212,29 @@ def build_sequences(df: pd.DataFrame, scaler=None, fit_scaler: bool = False):  #
     n = len(df)
 
     # ── 标签向量化 ────────────────────────────────────────────────────
-    # 用 stride_tricks 构造 (n, LABEL_HORIZON) 的未来高价矩阵，一次 max
     from numpy.lib.stride_tricks import sliding_window_view
-    future = sliding_window_view(highs, LABEL_HORIZON)[1:]          # (n-H, H)
-    future_max = future.max(axis=1)                                  # (n-H,)
-    valid_close = closes[:n - LABEL_HORIZON]
-    labels = np.zeros(n, dtype=np.float32)
-    mask = valid_close > 0
-    labels[:n - LABEL_HORIZON][mask] = (
-        (future_max[mask] - valid_close[mask]) / valid_close[mask] > LABEL_THRESHOLD
-    ).astype(np.float32)
+    labels      = np.zeros(n, dtype=np.float32)
+    cur_close   = closes[:n - LABEL_HORIZON]          # closes[0..n-H-1]
+    fwd_close   = closes[LABEL_HORIZON:]              # closes[H..n-1]
+
+    if USE_EXCESS_LABEL and "mkt_close" in df.columns:
+        # 超额收益标签：个股5日涨幅 − 大盘5日涨幅 > EXCESS_THRESHOLD
+        # 剥离大盘 beta，让模型专注个股相对强弱（alpha）
+        mkt_c     = df["mkt_close"].values.astype(float)
+        mkt_cur   = mkt_c[:n - LABEL_HORIZON]
+        mkt_fwd   = mkt_c[LABEL_HORIZON:]
+        stock_ret = np.where(cur_close  > 0, fwd_close / cur_close  - 1, 0.0)
+        mkt_ret   = np.where(mkt_cur    > 0, mkt_fwd   / mkt_cur    - 1, 0.0)
+        excess    = stock_ret - mkt_ret
+        labels[:n - LABEL_HORIZON] = (excess > EXCESS_THRESHOLD).astype(np.float32)
+    else:
+        # 原始标签：未来 H 日内最高价涨幅 > LABEL_THRESHOLD（绝对涨幅）
+        future     = sliding_window_view(highs, LABEL_HORIZON)[1:]  # (n-H, H)
+        future_max = future.max(axis=1)
+        mask       = cur_close > 0
+        labels[:n - LABEL_HORIZON][mask] = (
+            (future_max[mask] - cur_close[mask]) / cur_close[mask] > LABEL_THRESHOLD
+        ).astype(np.float32)
 
     # ── 序列向量化 ───────────────────────────────────────────────────
     # sliding_window_view: (N, WINDOW_SIZE, FEATURE_DIM)，零拷贝

@@ -50,7 +50,9 @@ START_DATE       = "20150101"
 WINDOW_SIZE      = 30             # 时间窗口（天）— 增加上下文
 FEATURE_DIM      = 19             # 特征维度（16个个股技术特征 + 3个市场环境特征）
 LABEL_HORIZON    = 5              # 标签：未来N日
-LABEL_THRESHOLD  = 0.05           # 标签阈值（5%）
+LABEL_THRESHOLD  = 0.05           # 绝对标签阈值（非超额模式下使用）
+USE_EXCESS_LABEL = True           # True = 超额收益标签（个股相对大盘），False = 绝对涨幅
+EXCESS_THRESHOLD = 0.03           # 超额收益阈值：个股5日收益 - 大盘5日收益 > 3%
 
 # ── 模型 ─────────────────────────────────────────────
 # 缩小容量 + 加强正则：金融数据信噪比极低，小模型反而泛化更好（防过拟合）
@@ -66,6 +68,7 @@ MAX_EPOCHS           = 300        # 足够多轮次，靠早停控制
 EARLY_STOP_PATIENCE  = 20         # 验证早早见顶，缩短耐心避免空跑
 LR_PATIENCE          = 7
 TRAIN_RATIO          = 0.8
+ENSEMBLE_N_MODELS    = 3          # 集成训练：训练多少个不同种子的模型，推理时取平均概率
 
 # ── 回测 & 模拟盘 ────────────────────────────────────
 INIT_CAPITAL       = 1_000_000   # 初始资金 100万
