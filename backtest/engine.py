@@ -18,7 +18,7 @@ from config import (
     WINDOW_SIZE, BUY_THRESHOLD, SELL_THRESHOLD,
     STOP_LOSS_RATIO, TAKE_PROFIT_RATIO, MAX_POSITION_RATIO, MAX_HOLDINGS,
     RELATIVE_RANK_MODE, TOP_N_BUY, RANK_SELL_BOTTOM,
-    MIN_HOLD_DAYS, COOLDOWN_DAYS,
+    MIN_HOLD_DAYS, COOLDOWN_DAYS, USE_MARKET_FILTER, MARKET_MA_DAYS,
     REPORTS_DIR,
 )
 from models.lstm_model import LSTMModel
@@ -83,6 +83,10 @@ class BacktestEngine:
         # 最短持有期：信号/排名类卖出至少持有 min_hold_days 个交易日才执行（止损/止盈
         # 不受限，可随时触发）。弱信号下排名每天抖动，最短持有期能大幅降低换手与手续费。
         self.min_hold_days = int(p.get("min_hold_days", MIN_HOLD_DAYS))
+        # 大盘择时闸：沪深300 跌破均线则清仓避熊、不再开仓（只做多策略的救命阀）
+        self.use_market_filter = bool(p.get("use_market_filter", USE_MARKET_FILTER))
+        self.market_ma_days    = int(p.get("market_ma_days", MARKET_MA_DAYS))
+        self._mkt_trend        = None   # {date: 是否多头}，run() 里构建
 
         self.cash         = float(self.init_capital)
         self.holdings     = {}
@@ -196,6 +200,49 @@ class BacktestEngine:
         # 自然日近似交易日：cooldown_days 个交易日 ≈ cooldown_days*1.5 自然日（含周末）
         return (date - last).days < self.cooldown_days * 1.5
 
+    # ── 大盘择时闸 ────────────────────────────────────
+
+    def _build_market_trend(self):
+        """
+        用沪深300构建每日多/空：收盘价 ≥ N日均线 视为多头（可持股），否则空头（清仓避熊）。
+        优先用传入的「沪深300」基准，没有则读缓存 market_features.csv；都没有则关闭择时闸。
+        """
+        self._mkt_trend = None
+        if not self.use_market_filter:
+            return
+        bm = self.benchmarks.get("沪深300") if self.benchmarks else None
+        if bm is None or bm.empty:
+            try:
+                from config import DATA_CACHE_DIR
+                fp = os.path.join(DATA_CACHE_DIR, "market_features.csv")
+                if os.path.exists(fp):
+                    mf = pd.read_csv(fp, parse_dates=["date"])
+                    if "mkt_close" in mf.columns:
+                        bm = mf[["date", "mkt_close"]].rename(columns={"mkt_close": "close"})
+            except Exception:
+                bm = None
+        if bm is None or bm.empty:
+            logger.warning("无沪深300数据，大盘择时闸已自动关闭")
+            return
+        bm = bm.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+        ma = bm["close"].rolling(self.market_ma_days, min_periods=1).mean()
+        bull = (bm["close"].values >= ma.values)
+        self._mkt_trend = {pd.Timestamp(d): bool(b) for d, b in zip(bm["date"], bull)}
+        n_bull = int(sum(bull))
+        logger.info(f"大盘择时闸已启用（沪深300 {self.market_ma_days}日均线）："
+                    f"{n_bull}/{len(bull)} 个交易日为多头可持股")
+
+    def _is_market_bullish(self, date: pd.Timestamp) -> bool:
+        """该交易日大盘是否多头（可持股）。无数据/未启用 → 默认 True（不拦截）。"""
+        if self._mkt_trend is None:
+            return True
+        v = self._mkt_trend.get(date)
+        if v is not None:
+            return v
+        # 该日无精确记录：取之前最近一个交易日的趋势
+        prior = [d for d in self._mkt_trend if d <= date]
+        return self._mkt_trend[max(prior)] if prior else True
+
     # ── 信号预计算（核心优化）──────────────────────────
 
     def _precompute_signals(self) -> dict:
@@ -249,6 +296,7 @@ class BacktestEngine:
         from backtest.metrics import compute_metrics
 
         self._build_price_index()
+        self._build_market_trend()      # 构建大盘择时闸
         logger.info("正在预计算所有信号（可能需要1-2分钟）...")
         signal_table = self._precompute_signals()
 
@@ -281,6 +329,17 @@ class BacktestEngine:
             }
 
             total_value = self._portfolio_value(date)
+
+            # ── 大盘择时闸：跌破均线 → 清仓避熊、本日不开新仓 ──
+            if self.use_market_filter and not self._is_market_bullish(date):
+                for code in list(self.holdings.keys()):
+                    if code in self.today_bought:
+                        continue
+                    price = self._get_close(code, date)
+                    if price > 0:
+                        self._sell(code, price, date, reason="market_bear")
+                self.nav_curve.append((date, self._portfolio_value(date)))
+                continue
 
             # ── 卖出判断 ────────────────────────────────
             # 止损 + 止盈（T+1保护，两种模式均执行）

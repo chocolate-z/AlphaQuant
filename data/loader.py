@@ -519,6 +519,45 @@ def load_cached_stocks(start: str = None, end: str = None,
     return result
 
 
+def get_tradeable_pool(limit: int = 100, recent_days: int = 250,
+                       min_amount_yi: float = 2.0, boards: tuple = ("sh", "sz")) -> list:
+    """
+    构建「可交易股票池」：从本地缓存里按近 recent_days 日成交额中位数排序，
+    取流动性最好的 limit 只（且中位成交额 ≥ min_amount_yi 亿元）。
+
+    为什么需要它：**回测和实盘必须用同一批、且流动性好的股票**，否则回测里能成交、
+    实盘却买不进卖不出，收益不可比。蓝筹流动性好、滑点小、也极少退市（顺带缓解幸存者偏差）。
+
+    Returns:
+        list[str]：代码，按流动性从高到低排序
+    """
+    import glob
+    files = sorted(glob.glob(os.path.join(DATA_CACHE_DIR, "*.csv")))
+    prefixes = tuple(boards)
+    scored = []
+    for fp in files:
+        name = os.path.splitext(os.path.basename(fp))[0]
+        if not (re.match(r"^(sh|sz|bj)\d{6}$", name) and name.startswith(prefixes)):
+            continue
+        try:
+            df = pd.read_csv(fp, usecols=["amount"]).tail(recent_days)
+            if len(df) < 60:
+                continue
+            amt = pd.to_numeric(df["amount"], errors="coerce").median()
+            if amt and amt > 0:
+                scored.append((name, float(amt)))
+        except Exception:
+            continue
+    scored.sort(key=lambda x: -x[1])
+    thr = min_amount_yi * 1e8
+    pool = [c for c, a in scored if a >= thr][:limit]
+    if len(pool) < 20:                       # 阈值太严时兜底：直接取流动性最高的 limit 只
+        pool = [c for c, _ in scored][:limit]
+    logger.info(f"[可交易池] 选出 {len(pool)} 只流动性最好的股票"
+                f"（近 {recent_days} 日成交额中位数 ≥ {min_amount_yi} 亿）")
+    return pool
+
+
 def load_all_stocks(force_refresh: bool = False, quick: bool = False,
                     start: str = None, end: str = None) -> dict:
     """
