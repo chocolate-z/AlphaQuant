@@ -70,59 +70,78 @@ def _read_signal_cache() -> dict:
 
 _CSS = """
 <style>
+:root{
+  --bg:#f5f5f7; --card:#ffffff; --text:#1d1d1f; --sub:#6e6e73; --line:#d2d2d7;
+  --accent:#0071e3; --accent-h:#0077ed; --up:#34c759; --down:#ff3b30; --warn:#ff9f0a;
+  --radius:18px; --shadow:0 2px 16px rgba(0,0,0,.06); --shadow-lg:0 8px 30px rgba(0,0,0,.10);
+}
 *{box-sizing:border-box}
-body{font-family:'Microsoft YaHei',sans-serif;background:#0d1117;color:#c9d1d9;margin:0}
-nav{background:#161b22;padding:12px 24px;display:flex;gap:20px;align-items:center;
-    border-bottom:1px solid #30363d;position:sticky;top:0;z-index:100}
-nav .brand{color:#f0f6fc;font-weight:bold;font-size:1.1em}
-nav a{color:#58a6ff;text-decoration:none;font-size:.95em}
-nav a:hover{color:#79c0ff;text-decoration:underline}
-.wrap{max-width:1200px;margin:24px auto;padding:0 20px}
-h1{color:#f0f6fc;border-bottom:1px solid #30363d;padding-bottom:8px;margin-top:0}
-h2{color:#58a6ff;font-size:1.1em}
-table{width:100%;border-collapse:collapse;margin:12px 0;font-size:.9em}
-th{background:#161b22;color:#8b949e;padding:8px 12px;text-align:left;
-   position:sticky;top:52px;z-index:10}
-td{padding:8px 12px;border-bottom:1px solid #21262d}
-tr:hover td{background:#161b22}
-.cards{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
-.card{background:#161b22;border:1px solid #30363d;border-radius:8px;
-      padding:16px 20px;min-width:160px}
-.val{font-size:1.7em;font-weight:bold;color:#f0f6fc;margin:4px 0}
-.lbl{color:#8b949e;font-size:.82em}
-.up{color:#3fb950}.down{color:#f85149}.neutral{color:#8b949e}
-.bar{display:inline-block;background:#1f6feb;height:10px;border-radius:2px;vertical-align:middle}
-.badge-buy{background:#1a4a2e;color:#3fb950;padding:2px 8px;border-radius:4px;font-size:.85em}
-.badge-sell{background:#3d1a1a;color:#f85149;padding:2px 8px;border-radius:4px;font-size:.85em}
-.badge-hold{background:#2a2a2a;color:#8b949e;padding:2px 8px;border-radius:4px;font-size:.85em}
-input,select{background:#161b22;border:1px solid #30363d;color:#c9d1d9;
-             padding:6px 10px;border-radius:4px;font-size:.9em}
-button{background:#1f6feb;color:#fff;border:none;padding:6px 16px;
-       border-radius:4px;cursor:pointer;font-size:.9em}
-button:hover{background:#388bfd}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Helvetica Neue",Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);margin:0;-webkit-font-smoothing:antialiased;letter-spacing:-.011em}
+nav{background:rgba(255,255,255,.72);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
+  padding:0 28px;height:54px;display:flex;gap:26px;align-items:center;border-bottom:1px solid rgba(0,0,0,.08);
+  position:sticky;top:0;z-index:100}
+nav .brand{color:var(--text);font-weight:600;font-size:1.05em;display:flex;align-items:center;gap:6px}
+nav a{color:var(--sub);text-decoration:none;font-size:.88em;font-weight:450;transition:color .2s}
+nav a:hover{color:var(--text)}
+.wrap{max-width:1280px;margin:34px auto;padding:0 24px}
+h1{color:var(--text);font-weight:600;font-size:2.1em;margin:0 0 6px;letter-spacing:-.022em}
+h2{color:var(--text);font-size:1.18em;font-weight:600;margin:26px 0 12px;letter-spacing:-.015em}
+table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0;font-size:.9em;
+  background:var(--card);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
+th{background:transparent;color:var(--sub);padding:13px 16px;text-align:left;font-weight:500;
+   border-bottom:1px solid var(--line);position:sticky;top:54px;z-index:10}
+td{padding:13px 16px;border-bottom:1px solid #f0f0f2}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafafa}
+.cards{display:flex;flex-wrap:wrap;gap:14px;margin:18px 0}
+.card{background:var(--card);border-radius:var(--radius);padding:18px 22px;min-width:160px;box-shadow:var(--shadow)}
+.val{font-size:1.7em;font-weight:600;color:var(--text);margin:4px 0;letter-spacing:-.02em}
+.lbl{color:var(--sub);font-size:.82em}
+.up{color:var(--up)}.down{color:var(--down)}.neutral{color:var(--sub)}
+.bar{display:inline-block;background:var(--accent);height:8px;border-radius:4px;vertical-align:middle}
+.badge-buy{background:rgba(52,199,89,.14);color:#248a3d;padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:500}
+.badge-sell{background:rgba(255,59,48,.13);color:#d70015;padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:500}
+.badge-hold{background:rgba(0,0,0,.06);color:var(--sub);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:500}
+input,select{background:#fff;border:1px solid var(--line);color:var(--text);padding:8px 12px;
+  border-radius:10px;font-size:.9em;font-family:inherit;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,113,227,.15)}
+button{background:var(--accent);color:#fff;border:none;padding:8px 20px;border-radius:980px;
+  cursor:pointer;font-size:.9em;font-weight:500;font-family:inherit;transition:background .2s,transform .1s}
+button:hover{background:var(--accent-h)}
+button:active{transform:scale(.97)}
+button:disabled{background:#e8e8ed;color:#aeaeb2;cursor:not-allowed;transform:none}
+button.danger{background:var(--down)}button.danger:hover{background:#ff5147}
 .filter-bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-.note{color:#8b949e;font-size:.85em;margin:8px 0}
+.note{color:var(--sub);font-size:.85em;margin:8px 0;line-height:1.5}
 canvas{max-width:100%}
-.panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px;margin:14px 0}
-.panel h2{margin:0 0 4px 0;color:#f0f6fc;font-size:1em}
-.panel .desc{color:#8b949e;font-size:.82em;margin:0 0 12px 0}
+.panel{background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);
+  transition:box-shadow .25s,transform .25s}
+.panel:hover{box-shadow:var(--shadow-lg)}
+.panel h2{margin:0 0 4px 0;color:var(--text);font-size:1.02em}
+.panel .desc{color:var(--sub);font-size:.82em;margin:0 0 12px 0}
 .panel form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
-button.danger{background:#a13232}button.danger:hover{background:#c44}
-button:disabled{background:#30363d;color:#8b949e;cursor:not-allowed}
-#console{background:#010409;border:1px solid #30363d;border-radius:8px;padding:14px;
-  font-family:'Consolas','Courier New',monospace;font-size:.85em;color:#c9d1d9;
-  white-space:pre-wrap;word-break:break-all;height:420px;overflow-y:auto;margin-top:8px}
-.console-wrap{position:sticky;bottom:0}
-.status-running{color:#d29922}.status-done{color:#3fb950}.status-error{color:#f85149}
-.spin{display:inline-block;width:10px;height:10px;border:2px solid #d29922;border-top-color:transparent;
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+/* 操作中心：左操作 + 右固定日志 */
+.control-layout{display:grid;grid-template-columns:1fr 470px;gap:26px;align-items:start;margin-top:10px}
+.control-actions{min-width:0}
+.control-side{position:sticky;top:78px;display:flex;flex-direction:column;gap:14px}
+#console{background:#1d1d1f;border-radius:14px;padding:16px 18px;
+  font-family:"SF Mono",ui-monospace,"Menlo","Consolas",monospace;font-size:.8em;color:#e8e8ed;
+  white-space:pre-wrap;word-break:break-all;height:360px;overflow-y:auto;line-height:1.55;
+  box-shadow:inset 0 1px 3px rgba(0,0,0,.4)}
+#console::-webkit-scrollbar{width:8px}#console::-webkit-scrollbar-thumb{background:#48484a;border-radius:4px}
+.status-running{color:var(--warn);font-weight:500}.status-done{color:var(--up);font-weight:500}
+.status-error{color:var(--down);font-weight:500}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--warn);border-top-color:transparent;
   border-radius:50%;animation:sp 0.8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
+@media(max-width:980px){.control-layout{grid-template-columns:1fr}.control-side{position:static}}
 </style>"""
 
 _NAV = """
 <nav>
-  <span class="brand">📈 AlphaQuant</span>
+  <span class="brand"> AlphaQuant</span>
   <a href="/">账户总览</a>
   <a href="/holdings">当前持仓</a>
   <a href="/signals">今日信号</a>
@@ -180,15 +199,15 @@ def index():
     new Chart(document.getElementById('navChart'),{{
       type:'line',
       data:{{labels:{nav_dates},datasets:[{{
-        label:'总资产',data:{nav_vals},borderColor:'#58a6ff',
-        fill:true,backgroundColor:'rgba(88,166,255,0.08)',tension:.2,pointRadius:1
+        label:'总资产',data:{nav_vals},borderColor:'#0071e3',borderWidth:2,
+        fill:true,backgroundColor:'rgba(0,113,227,0.08)',tension:.3,pointRadius:0
       }}]}},
       options:{{
         scales:{{
-          y:{{ticks:{{color:'#8b949e',callback:v=>'¥'+v.toLocaleString()}},grid:{{color:'#21262d'}}}},
-          x:{{ticks:{{color:'#8b949e',maxTicksLimit:12}},grid:{{color:'#21262d'}}}}
+          y:{{ticks:{{color:'#6e6e73',callback:v=>'¥'+v.toLocaleString()}},grid:{{color:'#f0f0f2'}}}},
+          x:{{ticks:{{color:'#6e6e73',maxTicksLimit:12}},grid:{{color:'#f0f0f2'}}}}
         }},
-        plugins:{{legend:{{labels:{{color:'#c9d1d9'}}}}}}
+        plugins:{{legend:{{labels:{{color:'#1d1d1f',usePointStyle:true,boxWidth:12}}}}}}
       }}
     }});
     </script>"""
@@ -273,9 +292,9 @@ def trades():
     filter_form = f"""
     <div class='filter-bar'>
       <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>
-        <label style='color:#8b949e'>股票代码</label>
+        <label style='color:var(--sub)'>股票代码</label>
         <input name='code' placeholder='如 sh600519' value='{filter_code}' style='width:140px'>
-        <label style='color:#8b949e'>日期</label>
+        <label style='color:var(--sub)'>日期</label>
         <input name='date' type='date' value='{filter_date}'>
         <button type='submit'>筛选</button>
         <a href='/trades' style='color:#8b949e;font-size:.9em'>清除筛选</a>
@@ -386,13 +405,13 @@ def performance():
       type:'bar',
       data:{{labels:{win_trend_dates},datasets:[{{
         label:'盈亏',data:{win_trend_vals},
-        backgroundColor:ctx=>ctx.raw===1?'rgba(63,185,80,.7)':'rgba(248,81,73,.7)',
-        borderWidth:0
+        backgroundColor:ctx=>ctx.raw===1?'rgba(52,199,89,.85)':'rgba(255,59,48,.85)',
+        borderWidth:0,borderRadius:4
       }}]}},
       options:{{
         scales:{{
-          y:{{min:0,max:1,ticks:{{color:'#8b949e',stepSize:1}},grid:{{color:'#21262d'}}}},
-          x:{{ticks:{{color:'#8b949e',maxTicksLimit:10}},grid:{{color:'#21262d'}}}}
+          y:{{min:0,max:1,ticks:{{color:'#6e6e73',stepSize:1}},grid:{{color:'#f0f0f2'}}}},
+          x:{{ticks:{{color:'#6e6e73',maxTicksLimit:10}},grid:{{color:'#f0f0f2'}}}}
         }},
         plugins:{{legend:{{display:false}}}}
       }}
@@ -564,14 +583,14 @@ def control():
     _start = START_DATE.replace("-", "")
 
     def _num(name, label, default, step="any", w=90):
-        return (f"<label style='color:#8b949e'>{label}</label>"
+        return (f"<label style='color:var(--sub)'>{label}</label>"
                 f"<input name='{name}' type='number' step='{step}' "
                 f"placeholder='{default}' style='width:{w}px'>")
 
     # 回测可调参数（留空=用 config 默认值，占位符显示默认）
     _bt_params = (
         "<details style='margin-top:10px;width:100%'>"
-        "<summary style='color:#58a6ff;cursor:pointer'>⚙ 可调参数（留空=用默认值）</summary>"
+        "<summary style='color:var(--accent);cursor:pointer;font-weight:500'>⚙ 可调参数（留空=用默认值）</summary>"
         "<div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:10px'>"
         + _num("buy_threshold",   "买入阈值", _BT)
         + _num("sell_threshold",  "卖出阈值", _ST)
@@ -581,7 +600,7 @@ def control():
         + _num("max_position",    "单股仓位", _MP)
         + _num("top_n_buy",       "每日买入数", _TN, step="1", w=80)
         + _num("rank_sell_bottom", "排名卖出底部比例", _RB, w=120)
-        + (f"<label style='color:#8b949e'>选股模式</label>"
+        + (f"<label style='color:var(--sub)'>选股模式</label>"
            f"<select name='relative_rank' style='width:130px'>"
            f"<option value=''>默认({'相对排名' if _RR else '绝对阈值'})</option>"
            f"<option value='1'>相对排名(买Top-N)</option>"
@@ -601,7 +620,7 @@ def control():
     # ── 训练类 ──
     train_panels = (
         panel("train_full",
-              "<label style='color:#8b949e'><input type='checkbox' name='refresh' value='1'> 强制重新下载数据</label>")
+              "<label style='color:var(--sub)'><input type='checkbox' name='refresh' value='1'> 强制重新下载数据</label>")
         + panel("train_quick")
         + panel("train_resume")
         + panel("train_ensemble")
@@ -610,12 +629,12 @@ def control():
     # ── 回测类 ──
     bt_panels = (
         panel("backtest",
-              f"<label style='color:#8b949e'>起始</label><input name='start' value='{_start}' style='width:110px'>"
-              f"<label style='color:#8b949e'>结束</label><input name='end' value='{_today}' style='width:110px'>"
+              f"<label style='color:var(--sub)'>起始</label><input name='start' value='{_start}' style='width:110px'>"
+              f"<label style='color:var(--sub)'>结束</label><input name='end' value='{_today}' style='width:110px'>"
               + _bt_params)
         + panel("single_bt",
                 "<input name='code' placeholder='如 sh600519' style='width:130px'>"
-                "<label style='color:#8b949e'>年数</label><input name='years' value='2' style='width:60px'>")
+                "<label style='color:var(--sub)'>年数</label><input name='years' value='2' style='width:60px'>")
     )
 
     # ── 工具类 ──
@@ -631,13 +650,13 @@ def control():
     )
 
     console = """
-    <div class="console-wrap">
-      <h2 id="taskTitle" style="color:#58a6ff">运行控制台</h2>
-      <p class="note" id="taskState">空闲中——点击上方任意「执行」按钮开始</p>
-      <div id="liveBox" style="display:none">
-        <h2 style="color:#58a6ff;margin:8px 0 4px">📈 训练实时曲线</h2>
+    <div class="panel">
+      <h2 id="taskTitle">运行控制台</h2>
+      <p class="note" id="taskState">空闲中——点击左侧任意「执行」按钮开始</p>
+      <div id="liveBox" style="display:none;margin:6px 0 12px">
+        <div class="lbl" style="margin-bottom:6px">📈 训练实时曲线</div>
         """ + _CHARTJS + """
-        <canvas id="liveChart" height="90"></canvas>
+        <canvas id="liveChart" height="120"></canvas>
       </div>
       <div id="console">（任务输出会实时显示在这里）</div>
       <div id="reports"></div>
@@ -664,19 +683,19 @@ def control():
       liveChart = new Chart(document.getElementById('liveChart'), {
         type:'line',
         data:{labels:[],datasets:[
-          {label:'损失',yAxisID:'yL',data:[],borderColor:'#58a6ff',pointRadius:0,tension:.2},
-          {label:'训练识别率',yAxisID:'yR',data:[],borderColor:'#3fb950',pointRadius:0,tension:.2},
-          {label:'验证识别率',yAxisID:'yR',data:[],borderColor:'#d29922',pointRadius:0,tension:.2}
+          {label:'损失',yAxisID:'yL',data:[],borderColor:'#0071e3',backgroundColor:'#0071e3',pointRadius:0,tension:.3,borderWidth:2},
+          {label:'训练识别率',yAxisID:'yR',data:[],borderColor:'#34c759',backgroundColor:'#34c759',pointRadius:0,tension:.3,borderWidth:2},
+          {label:'验证识别率',yAxisID:'yR',data:[],borderColor:'#ff9f0a',backgroundColor:'#ff9f0a',pointRadius:0,tension:.3,borderWidth:2}
         ]},
         options:{animation:false,interaction:{mode:'index',intersect:false},
           scales:{
-            yL:{position:'left',title:{display:true,text:'损失',color:'#58a6ff'},
-                ticks:{color:'#8b949e'},grid:{color:'#21262d'}},
-            yR:{position:'right',min:0.3,max:1.0,title:{display:true,text:'识别率AUC',color:'#3fb950'},
-                ticks:{color:'#8b949e'},grid:{drawOnChartArea:false}},
-            x:{ticks:{color:'#8b949e',maxTicksLimit:15},grid:{color:'#21262d'}}
+            yL:{position:'left',title:{display:true,text:'损失',color:'#0071e3'},
+                ticks:{color:'#6e6e73'},grid:{color:'#f0f0f2'}},
+            yR:{position:'right',min:0.3,max:1.0,title:{display:true,text:'识别率AUC',color:'#34c759'},
+                ticks:{color:'#6e6e73'},grid:{drawOnChartArea:false}},
+            x:{ticks:{color:'#6e6e73',maxTicksLimit:15},grid:{color:'#f0f0f2'}}
           },
-          plugins:{legend:{labels:{color:'#c9d1d9'}}}
+          plugins:{legend:{labels:{color:'#1d1d1f',boxWidth:12,usePointStyle:true}}}
         }
       });
       return liveChart;
@@ -753,12 +772,17 @@ def control():
     </script>"""
 
     body = (f"<h1>⚙ 操作中心</h1>"
-            f"<p class='note'>所有命令行菜单操作均可在此执行，耗时任务（训练/回测）会在下方控制台实时滚动日志。"
+            f"<p class='note'>所有命令行菜单操作均可在此执行，耗时任务（训练/回测）会在右侧控制台实时滚动日志。"
             f"同一时刻只允许一个任务运行。</p>"
-            f"<h2>训练</h2><div class='grid'>{train_panels}</div>"
-            f"<h2>回测</h2><div class='grid'>{bt_panels}</div>"
-            f"<h2>工具</h2><div class='grid'>{tool_panels}</div>"
-            f"{console}{script}")
+            f"<div class='control-layout'>"
+            f"  <div class='control-actions'>"
+            f"    <h2 style='margin-top:8px'>训练</h2><div class='grid'>{train_panels}</div>"
+            f"    <h2>回测</h2><div class='grid'>{bt_panels}</div>"
+            f"    <h2>工具</h2><div class='grid'>{tool_panels}</div>"
+            f"  </div>"
+            f"  <div class='control-side'>{console}</div>"
+            f"</div>"
+            f"{script}")
     return _page("操作中心", body)
 
 
