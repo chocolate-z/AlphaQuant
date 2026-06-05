@@ -19,11 +19,12 @@ from config import (
     STOP_LOSS_RATIO, TAKE_PROFIT_RATIO, MAX_POSITION_RATIO, MAX_HOLDINGS,
     RELATIVE_RANK_MODE, TOP_N_BUY, RANK_SELL_BOTTOM,
     MIN_HOLD_DAYS, COOLDOWN_DAYS, USE_MARKET_FILTER, MARKET_MA_DAYS,
+    LIQ_WINDOW_DAYS, LIQ_MIN_AMOUNT_YI,
     REPORTS_DIR,
 )
 from models.lstm_model import LSTMModel
 from models.trainer import predict_proba
-from features.builder import build_sequences, FEATURE_NAMES
+from features.builder import build_sequences, FEATURE_NAMES, CROSS_FEATURES, compute_cross_sectional
 from data.loader import get_stock_name
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,10 @@ class BacktestEngine:
         self.use_market_filter = bool(p.get("use_market_filter", USE_MARKET_FILTER))
         self.market_ma_days    = int(p.get("market_ma_days", MARKET_MA_DAYS))
         self._mkt_trend        = None   # {date: 是否多头}，run() 里构建
+        # 动态可交易池（point-in-time）：买入只允许「截至当日近 N 日成交额中位数 ≥ 阈值」的票
+        self.liq_window     = int(p.get("liq_window_days", LIQ_WINDOW_DAYS))
+        self.liq_min_amount = float(p.get("liq_min_amount_yi", LIQ_MIN_AMOUNT_YI)) * 1e8
+        self._liq           = None      # {code: {date: 近N日成交额中位数}}，run() 里构建
 
         self.cash         = float(self.init_capital)
         self.holdings     = {}
@@ -243,6 +248,32 @@ class BacktestEngine:
         prior = [d for d in self._mkt_trend if d <= date]
         return self._mkt_trend[max(prior)] if prior else True
 
+    # ── 动态可交易池（point-in-time 流动性）────────────
+
+    def _build_liquidity(self):
+        """
+        逐股算「近 liq_window 个交易日成交额中位数」的滚动序列（只用当日及之前的数据，
+        天然 point-in-time、无未来函数）。结果存 {code: {date: 中位成交额}}。
+        """
+        self._liq = {}
+        if self.liq_min_amount <= 0:
+            return
+        for code, df in self.stock_data.items():
+            if "amount" not in df.columns:
+                continue
+            amt = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+            med = amt.rolling(self.liq_window, min_periods=max(5, self.liq_window // 3)).median()
+            self._liq[code] = dict(zip(df["date"], med.values))
+
+    def _is_liquid(self, code: str, date: pd.Timestamp) -> bool:
+        """截至 date，该票近 N 日成交额中位数是否达标（可买入）。无数据视为不可买（保守）。"""
+        if self.liq_min_amount <= 0:
+            return True
+        m = (self._liq or {}).get(code, {}).get(date)
+        if m is None or pd.isna(m):
+            return False
+        return m >= self.liq_min_amount
+
     # ── 信号预计算（核心优化）──────────────────────────
 
     def _precompute_signals(self) -> dict:
@@ -255,11 +286,15 @@ class BacktestEngine:
         """
         signal_table = {}
 
+        # 在整个回测股票池上算横截面排名（开启时，与训练同口径），再逐股推理
+        cs_map = compute_cross_sectional(self.stock_data) if CROSS_FEATURES else {}
+
         for code, df in self.stock_data.items():
             if len(df) < WINDOW_SIZE + 5:
                 continue
             try:
-                X, _, _, dates = build_sequences(df, scaler=self.scaler, fit_scaler=False)
+                X, _, _, dates = build_sequences(df, scaler=self.scaler, fit_scaler=False,
+                                                 cs_df=cs_map.get(code))
                 if len(X) == 0:
                     continue
                 probs = predict_proba(self.model, X)
@@ -297,17 +332,22 @@ class BacktestEngine:
 
         self._build_price_index()
         self._build_market_trend()      # 构建大盘择时闸
+        self._build_liquidity()         # 构建 point-in-time 流动性（动态可交易池）
         logger.info("正在预计算所有信号（可能需要1-2分钟）...")
         signal_table = self._precompute_signals()
 
-        all_dates = set()
+        all_dates_set = set()
         for df in self.stock_data.values():
-            all_dates.update(df["date"].tolist())
-        all_dates = sorted(all_dates)
+            all_dates_set.update(df["date"].tolist())
+        all_dates = sorted(all_dates_set)
 
         if not all_dates:
             print("\n  ⚠ 无有效股票数据，无法执行回测。请检查网络连接后重试。\n")
             return {}
+
+        # 关键：建立「上一交易日」映射，用**昨日**的信号在**今日**成交，杜绝未来函数
+        # （信号由截至某日收盘的数据算出，只能在它之后的交易日执行，不能当日算当日成交）。
+        prev_day = {all_dates[i]: all_dates[i - 1] for i in range(1, len(all_dates))}
 
         # 样本外回测：信号已用完整历史预计算，这里把交易/净值起点推到 start_date 之后
         if self.start_date is not None:
@@ -323,15 +363,17 @@ class BacktestEngine:
             self.today_bought = set()
             self.today_sold   = set()
 
+            # 用「上一交易日」的信号与大盘趋势做今日决策（无未来函数）；首日无前日则全 0.5（不动）
+            sig_date = prev_day.get(date)
             signals = {
-                code: signal_table.get((code, date), 0.5)
+                code: (signal_table.get((code, sig_date), 0.5) if sig_date is not None else 0.5)
                 for code in self.stock_data
             }
 
             total_value = self._portfolio_value(date)
 
-            # ── 大盘择时闸：跌破均线 → 清仓避熊、本日不开新仓 ──
-            if self.use_market_filter and not self._is_market_bullish(date):
+            # ── 大盘择时闸：跌破均线 → 清仓避熊、本日不开新仓（用昨日趋势判定）──
+            if self.use_market_filter and sig_date is not None and not self._is_market_bullish(sig_date):
                 for code in list(self.holdings.keys()):
                     if code in self.today_bought:
                         continue
@@ -382,6 +424,7 @@ class BacktestEngine:
                     (code, prob) for code, prob in ranked
                     if code not in self.holdings and code not in self.today_bought
                     and not self._in_cooldown(code, date)   # 刚卖出的不立刻买回，杜绝刷单
+                    and self._is_liquid(code, sig_date)     # 按昨日流动性判定（动态池，无未来函数）
                 ][:self.top_n_buy]
                 for code, prob in candidates:
                     if len(self.holdings) >= self.max_holdings:
@@ -394,6 +437,8 @@ class BacktestEngine:
                     if len(self.holdings) >= self.max_holdings:
                         break
                     if code in self.holdings or self._in_cooldown(code, date):
+                        continue
+                    if not self._is_liquid(code, sig_date):   # 动态可交易池（按昨日流动性，无未来函数）
                         continue
                     if prob > self.buy_threshold:
                         price = self._get_close(code, date)

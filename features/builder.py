@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (WINDOW_SIZE, LABEL_HORIZON, LABEL_THRESHOLD, MODEL_SAVE_DIR,
                     TRAIN_RATIO, DATA_CACHE_DIR, START_DATE,
-                    USE_EXCESS_LABEL, EXCESS_THRESHOLD)
+                    USE_EXCESS_LABEL, EXCESS_THRESHOLD, USE_CROSS_SECTIONAL)
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,20 @@ MARKET_FEATURES = [
     "mkt_ma20_dev",  # 大盘偏离20日均线（牛熊环境）
 ]
 
-FEATURE_NAMES = FEATURE_NAMES + MARKET_FEATURES
+# ── 横截面特征（机构级 alpha 技术）──
+# 同一天里，这只票的动量/量能/RSI 在**全市场**排第几名（百分位 0~1）。
+# 这是"相对强弱"——新增信息，比再堆价量指标更能提升选股 alpha。
+# 训练/回测/实盘都在各自的股票池内计算排名（口径一致）。
+CROSS_FEATURES = [
+    "cs_ret5d",     # 5日收益的全市场百分位排名
+    "cs_ret20d",    # 20日收益的全市场百分位排名
+    "cs_volratio",  # 量比的全市场百分位排名
+    "cs_rsi",       # RSI 的全市场百分位排名
+] if USE_CROSS_SECTIONAL else []     # 默认关闭（实测净减分）
 
-FEATURE_DIM = len(FEATURE_NAMES)  # 19
+FEATURE_NAMES = FEATURE_NAMES + MARKET_FEATURES + CROSS_FEATURES
+
+FEATURE_DIM = len(FEATURE_NAMES)  # 23
 
 # 沪深300指数缓存（惰性加载，所有路径共享）
 _MARKET_CACHE = None
@@ -198,6 +209,41 @@ def compute_raw_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def compute_cross_sectional(stock_data_dict: dict) -> dict:
+    """
+    计算「横截面排名」特征：对每个交易日，把池内所有股票的某指标排序，取百分位（0~1）。
+    例如某天某票 cs_ret5d=0.95，表示它的 5 日动量强过全池 95% 的票。
+
+    口径一致性：训练/回测/实盘各自在自己的股票池内计算，保证排名含义一致。
+
+    Args:
+        stock_data_dict: {code: 原始日线 DataFrame}
+    Returns:
+        {code: DataFrame[date, cs_ret5d, cs_ret20d, cs_volratio, cs_rsi]}
+    """
+    src = [("ret_5d", "cs_ret5d"), ("ret_20d", "cs_ret20d"),
+           ("vol_ratio", "cs_volratio"), ("rsi14", "cs_rsi")]
+    frames = []
+    for code, df in stock_data_dict.items():
+        if df is None or "date" not in df.columns or len(df) < WINDOW_SIZE:
+            continue
+        try:
+            r = compute_raw_features(df)
+            sub = r[["date"] + [s for s, _ in src]].copy()
+            sub["code"] = code
+            frames.append(sub)
+        except Exception:
+            continue
+    if not frames:
+        return {}
+    big = pd.concat(frames, ignore_index=True)
+    for raw, cs in src:
+        # 每个交易日内做百分位排名（同名次取均值），缺失记 0.5（中性）
+        big[cs] = big.groupby("date")[raw].rank(pct=True, method="average")
+    cols = ["date"] + [c for _, c in src]
+    return {code: g[cols].reset_index(drop=True) for code, g in big.groupby("code")}
+
+
 def _window_zscore(window: np.ndarray) -> np.ndarray:
     """
     逐窗口 Z-Score 归一化：每个特征在该窗口内减去均值除以标准差。
@@ -209,12 +255,23 @@ def _window_zscore(window: np.ndarray) -> np.ndarray:
     return (window - mean) / std
 
 
-def build_sequences(df: pd.DataFrame, scaler=None, fit_scaler: bool = False):  # scaler/fit_scaler unused, kept for API compat
+def build_sequences(df: pd.DataFrame, scaler=None, fit_scaler: bool = False, cs_df=None):  # scaler/fit_scaler unused, kept for API compat
     """
     将特征 DataFrame 转换为 LSTM 输入序列和标签。
     全向量化实现（无 Python 循环），比逐窗口循环快 20~50x。
+
+    cs_df: 该股票的横截面排名特征（来自 compute_cross_sectional），按 date 合并；
+           不提供时横截面特征填 0.5（中性）——单股推理无全市场口径时如此降级。
     """
     df = compute_raw_features(df)
+    # 合并横截面排名特征（缺失填 0.5 中性，保证特征维度恒为 FEATURE_DIM）
+    if cs_df is not None and "date" in df.columns:
+        df = df.merge(cs_df, on="date", how="left")
+    for col in CROSS_FEATURES:
+        if col not in df.columns:
+            df[col] = 0.5
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.5)
+
     available = [c for c in FEATURE_NAMES if c in df.columns]
     feat = df[available].values.astype(np.float32)
     feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
@@ -288,12 +345,19 @@ def build_all_stocks(stock_data_dict: dict, fit_scaler: bool = True):  # fit_sca
     """
     all_X, all_y, all_dates = [], [], []
 
+    # 先在整个股票池上算横截面排名（开启时），再逐股构建序列
+    if CROSS_FEATURES:
+        logger.info("计算横截面排名特征（全市场相对强弱）...")
+        cs_map = compute_cross_sectional(stock_data_dict)
+    else:
+        cs_map = {}
+
     for code, df in stock_data_dict.items():
         if len(df) < WINDOW_SIZE + LABEL_HORIZON + 10:
             logger.warning(f"[{code}] 数据太少（{len(df)}行），跳过")
             continue
         try:
-            X, y, _, dts = build_sequences(df)
+            X, y, _, dts = build_sequences(df, cs_df=cs_map.get(code))
             if len(X) > 0:
                 all_X.append(X)
                 all_y.append(y)
@@ -322,14 +386,21 @@ def load_scaler():
     return None
 
 
-def build_inference_sequence(df: pd.DataFrame, scaler=None) -> np.ndarray:
+def build_inference_sequence(df: pd.DataFrame, scaler=None, cs_df=None) -> np.ndarray:
     """
     为推理构建最新一个序列（逐窗口归一化）。
+    cs_df：该股票横截面排名特征；不提供则填 0.5（单股推理无全市场口径时降级）。
 
     Returns:
         X: np.ndarray (1, WINDOW_SIZE, FEATURE_DIM)
     """
     df = compute_raw_features(df)
+    if cs_df is not None and "date" in df.columns:
+        df = df.merge(cs_df, on="date", how="left")
+    for col in CROSS_FEATURES:
+        if col not in df.columns:
+            df[col] = 0.5
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.5)
     available = [c for c in FEATURE_NAMES if c in df.columns]
     feat = df[available].values.astype(np.float32)
     feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)

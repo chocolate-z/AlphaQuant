@@ -16,7 +16,7 @@ from config import (
 )
 from data.realtime import fetch_all_realtime, update_all_caches, is_trade_day
 from data.loader import load_all_stocks, load_stock_data
-from features.builder import build_inference_sequence, load_scaler
+from features.builder import build_inference_sequence, load_scaler, CROSS_FEATURES, compute_cross_sectional
 from models.lstm_model import load_model, load_best_available
 from models.trainer import predict_proba
 from paper_trading.account import VirtualAccount
@@ -35,13 +35,15 @@ def _compute_signals_batch(model, scaler) -> dict:
         {stock_code: probability}
     """
     stock_data = load_all_stocks()
+    # 在整个池上算横截面排名（开启时，与训练/回测同口径）
+    cs_map = compute_cross_sectional(stock_data) if CROSS_FEATURES else {}
     signals = {}
     for code, df in stock_data.items():
         if df is None or len(df) < 21:
             signals[code] = 0.5
             continue
         try:
-            X = build_inference_sequence(df, scaler)
+            X = build_inference_sequence(df, scaler, cs_df=cs_map.get(code))
             signals[code] = float(predict_proba(model, X)[0])
         except Exception as e:
             logger.warning(f"[{code}] 推理失败: {e}")
