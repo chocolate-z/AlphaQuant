@@ -178,18 +178,20 @@ def fetch_realtime_quote(stock_code: str) -> dict:
     return result
 
 
-def fetch_all_realtime() -> dict:
+def fetch_all_realtime(codes: list = None) -> dict:
     """
-    批量获取股票池当日实时行情（单次请求多代码，每批 20 只）。
+    批量获取实时行情（单次请求多代码，每批 20 只）。
+    codes 不传时用 STOCK_POOL；传入时可覆盖任意股票池（如动态可交易池）。
     """
-    if not STOCK_POOL:
+    codes = codes if codes is not None else STOCK_POOL
+    if not codes:
         return {}
 
     batch_size = 20
     results = {}
 
-    for i in range(0, len(STOCK_POOL), batch_size):
-        batch = STOCK_POOL[i: i + batch_size]
+    for i in range(0, len(codes), batch_size):
+        batch = codes[i: i + batch_size]
         codes_str = ",".join(batch)
         try:
             url = f"https://hq.sinajs.cn/list={codes_str}"
@@ -203,7 +205,7 @@ def fetch_all_realtime() -> dict:
             logger.warning(f"新浪批量行情失败 (batch {i//batch_size}): {e}")
 
     # 新浪整体失败或部分缺失时，用腾讯兜底
-    missing = [c for c in STOCK_POOL if c not in results]
+    missing = [c for c in codes if c not in results]
     if missing:
         logger.info(f"新浪缺 {len(missing)} 只，用腾讯实时兜底...")
         for code, q in _fetch_tencent_realtime(missing).items():
