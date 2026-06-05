@@ -132,7 +132,7 @@ h1{color:var(--text);font-weight:700;font-size:2.5em;margin:0 0 4px;letter-spaci
 h2{color:var(--text);font-size:1.2em;font-weight:600;margin:30px 0 12px;letter-spacing:-.018em}
 /* ── 表格（分组内嵌圆角）── */
 table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0;font-size:.9em;
-  background:var(--card);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden}
 th{background:var(--card-2);color:var(--sub);padding:13px 18px;text-align:left;font-weight:500;font-size:.92em;
    border-bottom:1px solid var(--hairline)}
 td{padding:13px 18px;border-bottom:1px solid var(--hairline)}
@@ -141,9 +141,9 @@ tbody tr{transition:background .12s}
 tbody tr:hover td{background:var(--hover)}
 /* ── 数据卡片 ── */
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px;margin:20px 0}
-.card{background:var(--card);border-radius:var(--radius);padding:18px 22px;box-shadow:var(--shadow);
-  transition:transform .25s cubic-bezier(.2,.7,.3,1),box-shadow .25s}
-.card:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 22px;
+  transition:background .2s,border-color .2s}
+.card:hover{background:var(--card-2);border-color:var(--accent-soft)}
 .val{font-size:1.75em;font-weight:600;color:var(--text);margin:5px 0 0;letter-spacing:-.025em}
 .lbl{color:var(--sub);font-size:.8em;font-weight:500}
 .up{color:var(--up)}.down{color:var(--down)}.neutral{color:var(--sub)}
@@ -167,9 +167,9 @@ button.danger{background:var(--down)}button.danger:hover{background:#ff5147}
 .note{color:var(--sub);font-size:.86em;margin:8px 0;line-height:1.55}
 canvas{max-width:100%}
 /* ── 面板 ── */
-.panel{background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);
-  transition:box-shadow .25s,transform .25s}
-.panel:hover{box-shadow:var(--shadow-lg)}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius-sm);padding:18px 20px;
+  transition:background .2s,border-color .2s}
+.panel:hover{border-color:var(--accent-soft)}
 .panel h2{margin:0 0 4px 0;color:var(--text);font-size:1.02em}
 .panel .desc{color:var(--sub);font-size:.82em;margin:0 0 12px 0}
 .panel form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -187,6 +187,10 @@ canvas{max-width:100%}
 .status-error{color:var(--down);font-weight:600}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--warn);border-top-color:transparent;
   border-radius:50%;animation:sp .8s linear infinite;vertical-align:middle;margin-right:6px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px;vertical-align:middle}
+.dot-run{background:var(--warn);animation:dotpulse 1.3s ease-in-out infinite}
+.dot-ok{background:var(--up)}.dot-err{background:var(--down)}.dot-idle{background:var(--faint)}
+@keyframes dotpulse{0%,100%{opacity:1}50%{opacity:.4}}
 @keyframes sp{to{transform:rotate(360deg)}}
 /* ── 侧栏底部主题切换 ── */
 .side-foot{margin-top:auto;padding:14px 8px 2px}
@@ -887,7 +891,7 @@ def logs():
                "</style>")
     console = ("<div class='panel'>"
                "<div class='loghead'><h2 id='taskTitle'>运行日志</h2>"
-               "<span id='taskState' class='note'>空闲中 —— 在「操作中心」点「执行」后，这里会实时滚动输出</span></div>"
+               "<span id='taskState' class='note'><span class='dot dot-idle'></span>空闲中 —— 在「操作中心」点「执行」后，这里会实时滚动输出</span></div>"
                "<div id='liveBox' style='display:none;margin:6px 0 12px'>"
                "<div class='lbl' style='margin-bottom:6px'>📈 训练实时曲线</div>"
                + _CHARTJS +
@@ -938,12 +942,12 @@ def logs():
     }
     function attach(taskId,name){
       consoleEl.textContent=''; reportsEl.innerHTML=''; resetLive();
-      stateEl.innerHTML='<span class="spin"></span><span class="status-running">运行中：'+name+'</span>';
+      stateEl.innerHTML='<span class="dot dot-run"></span><span class="status-running">运行中：'+name+'</span>';
       if(evtSource) evtSource.close();
       evtSource=new EventSource('/stream/'+taskId);
       evtSource.onmessage=e=>{const txt=JSON.parse(e.data);consoleEl.textContent+=txt;consoleEl.scrollTop=consoleEl.scrollHeight;feedChart(txt);};
       evtSource.addEventListener('done',e=>{const st=JSON.parse(e.data);
-        stateEl.innerHTML=st==='done'?'<span class="status-done">✓ 已完成</span>':'<span class="status-error">✗ 出错（详见上方输出）</span>';
+        stateEl.innerHTML=st==='done'?'<span class="dot dot-ok"></span><span class="status-done">已完成</span>':'<span class="dot dot-err"></span><span class="status-error">出错（详见上方输出）</span>';
         evtSource.close(); showReports(taskId);});
     }
     fetch('/task_status').then(r=>r.json()).then(d=>{ if(d.busy) attach(d.task_id,d.name); });
