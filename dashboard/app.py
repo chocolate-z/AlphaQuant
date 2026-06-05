@@ -7,7 +7,7 @@ import time
 import logging
 from datetime import datetime
 
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, send_from_directory
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -502,6 +502,36 @@ def stream(task_id):
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.route("/report/<path:filename>")
+def report_file(filename):
+    """提供 reports/ 目录下的图表文件。"""
+    from config import REPORTS_DIR
+    return send_from_directory(REPORTS_DIR, filename)
+
+
+@app.route("/task_reports/<task_id>")
+def task_reports(task_id):
+    """返回任务运行期间新生成（或更新）的图表，供完成后内嵌预览。"""
+    import glob
+    from config import REPORTS_DIR
+
+    task = manager.get(task_id)
+    if task is None:
+        return jsonify({"images": []})
+
+    cutoff = task.start - 2  # 留 2s 余量，避免临界遗漏
+    imgs = []
+    for p in glob.glob(os.path.join(REPORTS_DIR, "*.png")):
+        mtime = os.path.getmtime(p)
+        if mtime >= cutoff:
+            name = os.path.basename(p)
+            imgs.append({"name": name,
+                         "url": f"/report/{name}?t={int(mtime)}",
+                         "mtime": mtime})
+    imgs.sort(key=lambda x: -x["mtime"])
+    return jsonify({"images": imgs})
+
+
 @app.route("/control")
 def control():
     from config import START_DATE
@@ -553,19 +583,34 @@ def control():
       <h2 id="taskTitle" style="color:#58a6ff">运行控制台</h2>
       <p class="note" id="taskState">空闲中——点击上方任意「执行」按钮开始</p>
       <div id="console">（任务输出会实时显示在这里）</div>
+      <div id="reports"></div>
     </div>"""
 
     script = """
     <script>
     const consoleEl = document.getElementById('console');
     const stateEl   = document.getElementById('taskState');
+    const reportsEl = document.getElementById('reports');
     let evtSource = null;
 
     function setButtons(disabled){
       document.querySelectorAll('form[data-action] button').forEach(b=>b.disabled=disabled);
     }
+    function showReports(taskId){
+      fetch('/task_reports/'+taskId).then(r=>r.json()).then(d=>{
+        if(!d.images || !d.images.length){ reportsEl.innerHTML=''; return; }
+        let h = '<h2 style="color:#58a6ff;margin-top:16px">📊 生成的图表</h2>';
+        d.images.forEach(img=>{
+          h += '<div style="margin:10px 0"><div class="note">'+img.name+'</div>'
+             + '<a href="'+img.url+'" target="_blank">'
+             + '<img src="'+img.url+'" style="max-width:100%;border:1px solid #30363d;border-radius:6px"></a></div>';
+        });
+        reportsEl.innerHTML = h;
+      });
+    }
     function attach(taskId, name){
       consoleEl.textContent = '';
+      reportsEl.innerHTML = '';
       stateEl.innerHTML = '<span class="spin"></span><span class="status-running">运行中：'+name+'</span>';
       setButtons(true);
       if(evtSource) evtSource.close();
@@ -581,6 +626,7 @@ def control():
           : '<span class="status-error">✗ 出错（详见上方输出）</span>';
         setButtons(false);
         evtSource.close();
+        showReports(taskId);
       });
       evtSource.onerror = ()=>{ setButtons(false); };
     }
