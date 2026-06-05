@@ -81,21 +81,23 @@ def _fetch_from_sohu(stock_code: str, start: str, end: str) -> pd.DataFrame:
         f"&stat=1&order=D&period=d&callback=historySearchHandler&rt=jsonp"
     )
 
-    for attempt in range(4):
+    # 搜狐已降级为备用源（腾讯为主），故快速失败：2 次、短等待，避免单只股票
+    # 卡在 503 退避上拖慢整体（旧实现 4 次退避最坏要等约 45 秒）。
+    for attempt in range(2):
         try:
-            resp = requests.get(url, timeout=20, headers=_sohu_headers(), allow_redirects=True)
+            resp = requests.get(url, timeout=15, headers=_sohu_headers(), allow_redirects=True)
             if resp.status_code in (503, 429):
-                wait = 3 * (2 ** attempt) + random.uniform(0, 2)
-                logger.warning(f"[{stock_code}] 搜狐 {resp.status_code} 限流，{wait:.1f}s 后重试（第{attempt+1}/4次）")
+                wait = 1.5 * (attempt + 1) + random.uniform(0, 1)
+                logger.warning(f"[{stock_code}] 搜狐 {resp.status_code} 限流，{wait:.1f}s 后重试（第{attempt+1}/2次，备用源）")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
             break
         except requests.exceptions.RequestException as e:
-            if attempt == 3:
+            if attempt == 1:
                 logger.warning(f"[{stock_code}] 搜狐连接失败: {e}")
                 return pd.DataFrame()
-            time.sleep(3 * (2 ** attempt))
+            time.sleep(1.5)
     else:
         return pd.DataFrame()
 
@@ -136,77 +138,108 @@ def _fetch_from_sohu(stock_code: str, start: str, end: str) -> pd.DataFrame:
 
 # ── 腾讯数据源（备用）────────────────────────────────────────────────
 
-def _fetch_from_tencent(stock_code: str, start: str, end: str) -> pd.DataFrame:
+# 腾讯 fqkline 单次 maxBars 上限实测 ≈ 800（>800 会被悄悄截断到 640，>2000 直接 param error）。
+# 故按 end 向前翻页拼接，覆盖完整历史。这是本项目最稳定的日线源。
+_TENCENT_MAXBARS = 800
+
+
+def _fetch_tencent_page(stock_code: str, start_fmt: str, end_fmt: str) -> list:
     """
-    腾讯前复权日K线（备用源，境外可达，已验证）。
-    接口: web.ifzq.gtimg.cn/appstock/app/fqkline/get
-    字段: [日期, 开盘, 收盘, 最高, 最低, 成交量(手)]
-    注：腾讯不含成交额和换手率，填0即可（特征层不使用这两列）
+    取腾讯 fqkline 的一页（最多 _TENCENT_MAXBARS 个交易日，结束于 end_fmt）。
+    返回原始行列表 [[日期,开,收,高,低,量], ...]；失败/无数据返回 []。
+    关键：param error 时 data 是空 list 而非 dict，必须容错（旧实现就栽在这）。
     """
-    start_fmt = f"{start[:4]}-{start[4:6]}-{start[6:]}"
-    end_fmt   = f"{end[:4]}-{end[4:6]}-{end[6:]}"
     url = (
         f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        f"?param={stock_code},day,{start_fmt},{end_fmt},3000,qfq"
+        f"?param={stock_code},day,{start_fmt},{end_fmt},{_TENCENT_MAXBARS},qfq"
     )
-
     for attempt in range(3):
         try:
             resp = requests.get(url, timeout=20, headers=_tencent_headers())
             if resp.status_code in (503, 429):
-                wait = 2 * (2 ** attempt) + random.uniform(0, 1)
-                logger.warning(f"[{stock_code}] 腾讯限流，{wait:.1f}s 后重试")
-                time.sleep(wait)
+                time.sleep(2 * (2 ** attempt) + random.uniform(0, 1))
                 continue
             resp.raise_for_status()
-            break
+            data = resp.json()
+            if data.get("code") != 0:
+                return []
+            payload = data.get("data")
+            if not isinstance(payload, dict):   # param error → data 为 [] ，容错
+                return []
+            stock_data = payload.get(stock_code) or {}
+            if not isinstance(stock_data, dict):
+                return []
+            return stock_data.get("qfqday") or stock_data.get("day") or []
         except requests.exceptions.RequestException as e:
             if attempt == 2:
                 logger.warning(f"[{stock_code}] 腾讯连接失败: {e}")
-                return pd.DataFrame()
+                return []
             time.sleep(2 ** attempt)
-    else:
-        return pd.DataFrame()
+        except Exception as e:
+            logger.warning(f"[{stock_code}] 腾讯解析失败: {e}")
+            return []
+    return []
 
-    try:
-        data = resp.json()
-        if data.get("code") != 0:
-            return pd.DataFrame()
 
-        stock_data = data.get("data", {}).get(stock_code, {})
-        # 优先取前复权数据 qfqday，没有则取 day
-        rows = stock_data.get("qfqday") or stock_data.get("day") or []
+def _fetch_from_tencent(stock_code: str, start: str, end: str) -> pd.DataFrame:
+    """
+    腾讯前复权日K线（**主源**，境外可达、稳定）。
+    接口: web.ifzq.gtimg.cn/appstock/app/fqkline/get（按 end 向前翻页取全历史）
+    字段: [日期, 开盘, 收盘, 最高, 最低, 成交量(手)]
+    注：腾讯不含成交额和换手率，填 0（特征层的换手率列在缓存历史里由搜狐提供）。
+    """
+    start_dt = datetime.strptime(start, "%Y%m%d")
+    start_fmt = start_dt.strftime("%Y-%m-%d")
+    cur_end   = datetime.strptime(end, "%Y%m%d")
+
+    merged: dict = {}     # 日期字符串 → 原始行，天然去重（翻页有 1 天重叠）
+    for _page in range(12):   # 800×12≈9600 天，远超 A 股最长历史
+        end_fmt = cur_end.strftime("%Y-%m-%d")
+        rows = _fetch_tencent_page(stock_code, start_fmt, end_fmt)
         if not rows:
-            return pd.DataFrame()
-
-        records = []
+            break
         for row in rows:
-            try:
-                records.append({
-                    "date":      pd.Timestamp(row[0]),
-                    "open":      float(row[1]),
-                    "close":     float(row[2]),
-                    "high":      float(row[3]),
-                    "low":       float(row[4]),
-                    "volume":    float(row[5]) * 100,   # 手 → 股
-                    "amount":    0.0,
-                    "pct_change": 0.0,                  # 后续特征层用收益率计算
-                    "turnover":  0.0,
-                })
-            except (ValueError, IndexError):
-                continue
+            merged[row[0]] = row
+        earliest = pd.Timestamp(rows[0][0])
+        if earliest <= pd.Timestamp(start_dt):
+            break
+        nxt = earliest - pd.Timedelta(days=1)
+        if nxt >= cur_end:        # 没有向前推进，防死循环
+            break
+        cur_end = nxt.to_pydatetime()
+        _throttle(0.5)
 
-        if not records:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(records).sort_values("date").reset_index(drop=True)
-        # 腾讯 pct_change 从收盘价推算
-        df["pct_change"] = df["close"].pct_change().fillna(0) * 100
-        return df
-
-    except Exception as e:
-        logger.warning(f"[{stock_code}] 腾讯解析失败: {e}")
+    if not merged:
         return pd.DataFrame()
+
+    end_ts = pd.Timestamp(datetime.strptime(end, "%Y%m%d"))
+    start_ts = pd.Timestamp(start_dt)
+    records = []
+    for row in merged.values():
+        try:
+            d = pd.Timestamp(row[0])
+            if d < start_ts or d > end_ts:
+                continue
+            records.append({
+                "date":   d,
+                "open":   float(row[1]),
+                "close":  float(row[2]),
+                "high":   float(row[3]),
+                "low":    float(row[4]),
+                "volume": float(row[5]) * 100,   # 手 → 股
+                "amount": 0.0,
+                "pct_change": 0.0,               # 下方按收盘价推算
+                "turnover":  0.0,
+            })
+        except (ValueError, IndexError):
+            continue
+
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records).sort_values("date").reset_index(drop=True)
+    df["pct_change"] = df["close"].pct_change().fillna(0) * 100
+    return df
 
 
 # ── 新浪数据源（第三备用）────────────────────────────────────────────
@@ -357,19 +390,21 @@ def fetch_all_stock_codes(force: bool = False) -> list:
 
 def _fetch_kline(stock_code: str, start: str, end: str) -> pd.DataFrame:
     """
-    拉取优先级：搜狐 → 腾讯 → 新浪
-    三个源都可用，任一成功即返回。
+    拉取优先级（按板块自适应，任一源成功即返回）：
+      · 沪深/科创/创业（sh/sz）：腾讯 → 搜狐 → 新浪（腾讯 fqkline 最稳、不限流、可取全历史）
+      · 北交所（bj）：搜狐 → 腾讯 → 新浪（腾讯 fqkline 不覆盖北交所历史，只返回 1 条）
     """
-    sources = [
-        ("搜狐",  _fetch_from_sohu),
-        ("腾讯",  _fetch_from_tencent),
-        ("新浪",  _fetch_from_sina),
-    ]
+    if stock_code.startswith("bj"):
+        sources = [("搜狐", _fetch_from_sohu), ("腾讯", _fetch_from_tencent), ("新浪", _fetch_from_sina)]
+    else:
+        sources = [("腾讯", _fetch_from_tencent), ("搜狐", _fetch_from_sohu), ("新浪", _fetch_from_sina)]
+    primary = sources[0][0]
+
     for name, fetch_fn in sources:
         try:
             df = fetch_fn(stock_code, start, end)
             if not df.empty:
-                if name != "搜狐":
+                if name != primary:
                     logger.info(f"[{stock_code}] 使用{name}备用源，获取 {len(df)} 条")
                 return df
             logger.warning(f"[{stock_code}] {name}源无数据，尝试下一个...")

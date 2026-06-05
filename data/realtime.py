@@ -82,9 +82,72 @@ def _parse_sina_quote(code: str, text: str) -> dict:
     return result
 
 
+def _tencent_headers() -> dict:
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Referer": "https://gu.qq.com/",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+
+
+def _parse_tencent_quote(code: str, fields: list) -> dict:
+    """
+    解析腾讯实时行情字段（qt.gtimg.cn）。
+    A股字段索引：[1]名称 [3]现价 [4]昨收 [5]今开 [6]成交量(手) [33]最高 [34]最低 [37]成交额(万元)
+    """
+    try:
+        open_  = float(fields[5])
+        prev   = float(fields[4])
+        close  = float(fields[3]) or prev
+        high   = float(fields[33])
+        low    = float(fields[34])
+        volume = float(fields[6]) * 100         # 手 → 股
+        amount = float(fields[37]) * 10000       # 万元 → 元
+        pct = (close - prev) / prev * 100 if prev > 0 else 0.0
+        return {
+            "stock_code": code, "date": datetime.today().date(),
+            "open": open_, "close": close, "high": high, "low": low,
+            "volume": volume, "amount": amount, "pct_change": round(pct, 2),
+            "turnover": 0.0, "volume_ratio": 1.0, "main_net_inflow": 0.0,
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _fetch_tencent_realtime(codes: list) -> dict:
+    """
+    腾讯实时行情兜底（qt.gtimg.cn/q=），新浪失败时使用。批量、GBK 编码。
+    """
+    out = {}
+    batch = 60
+    for i in range(0, len(codes), batch):
+        grp = codes[i: i + batch]
+        try:
+            url = "https://qt.gtimg.cn/q=" + ",".join(grp)
+            resp = requests.get(url, timeout=12, headers=_tencent_headers())
+            text = resp.content.decode("gb18030", errors="replace")
+            for line in text.split(";"):
+                line = line.strip()
+                if '="' not in line:
+                    continue
+                code = line.split("=", 1)[0].replace("v_", "").strip()
+                m = re.search(r'"([^"]*)"', line)
+                if not m:
+                    continue
+                fields = m.group(1).split("~")
+                if len(fields) < 38:
+                    continue
+                q = _parse_tencent_quote(code, fields)
+                if q and q.get("close", 0) > 0:
+                    out[code] = q
+        except Exception as e:
+            logger.warning(f"腾讯实时行情兜底失败 (batch {i//batch}): {e}")
+    return out
+
+
 def fetch_realtime_quote(stock_code: str) -> dict:
     """
-    获取单只股票当日实时行情（新浪 hq.sinajs.cn）。
+    获取单只股票当日实时行情：新浪 hq.sinajs.cn 为主，失败时腾讯 qt.gtimg.cn 兜底。
 
     Args:
         stock_code: 如 sh600519
@@ -105,7 +168,13 @@ def fetch_realtime_quote(stock_code: str) -> dict:
         text = resp.content.decode("gb18030", errors="replace")
         result = _parse_sina_quote(stock_code, text)
     except Exception as e:
-        logger.error(f"[{stock_code}] 实时行情获取失败: {e}")
+        logger.warning(f"[{stock_code}] 新浪实时行情失败: {e}，尝试腾讯兜底")
+
+    # 新浪没拿到有效价时，用腾讯兜底
+    if result.get("close", 0) <= 0:
+        tx = _fetch_tencent_realtime([stock_code])
+        if stock_code in tx:
+            return tx[stock_code]
     return result
 
 
@@ -131,7 +200,14 @@ def fetch_all_realtime() -> dict:
                 if q.get("close", 0) > 0:
                     results[code] = q
         except Exception as e:
-            logger.error(f"批量行情请求失败 (batch {i//batch_size}): {e}")
+            logger.warning(f"新浪批量行情失败 (batch {i//batch_size}): {e}")
+
+    # 新浪整体失败或部分缺失时，用腾讯兜底
+    missing = [c for c in STOCK_POOL if c not in results]
+    if missing:
+        logger.info(f"新浪缺 {len(missing)} 只，用腾讯实时兜底...")
+        for code, q in _fetch_tencent_realtime(missing).items():
+            results[code] = q
 
     return results
 
