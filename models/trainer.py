@@ -186,7 +186,13 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
 
     pretrained_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
     if resume and os.path.exists(pretrained_path):
-        model.load_state_dict(torch.load(pretrained_path, map_location=device))
+        # 兼容性加载：剥掉权重文件里可能的 '_orig_mod.' 前缀，并装进「真实模块」
+        # （torch.compile 包装后要取 _orig_mod），这样无论权重文件是否带前缀、
+        # 当前模型是否被编译，增量训练都能正确续训。
+        from models.lstm_model import strip_compile_prefix
+        _state  = strip_compile_prefix(torch.load(pretrained_path, map_location=device))
+        _target = getattr(model, "_orig_mod", model)
+        _target.load_state_dict(_state)
         msg = f"已加载已有模型权重（{pretrained_path}），在此基础上继续训练"
         logger.info(msg)
         print(f"\n  ✔ {msg}\n")

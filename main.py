@@ -17,7 +17,11 @@ logging.basicConfig(
     ],
 )
 # 终端只显示 WARNING 及以上，避免刷屏；详细 INFO 看 logs/alphaquant.log
-logging.getLogger().handlers[1].setLevel(logging.WARNING)
+# 按类型找控制台 handler，避免硬编码下标 [1]（若 logging 已被预先配置，
+# basicConfig 会变成空操作、handlers 数量不定，硬编码下标会 IndexError）
+for _h in logging.getLogger().handlers:
+    if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
+        _h.setLevel(logging.WARNING)
 logger = logging.getLogger("main")
 
 # ── 菜单工具 ─────────────────────────────────────────────────────────
