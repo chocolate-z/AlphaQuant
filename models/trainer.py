@@ -3,6 +3,7 @@
 import os
 import logging
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -14,11 +15,47 @@ from config import (
     BATCH_SIZE, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR_PATIENCE,
     LEARNING_RATE, TRAIN_RATIO, MODEL_SAVE_DIR, REPORTS_DIR,
     CPU_THREAD_RATIO, WEIGHT_DECAY, NOISE_STD, ENSEMBLE_N_MODELS,
-    FOCAL_GAMMA, LABEL_SMOOTHING,
+    FOCAL_GAMMA, LABEL_SMOOTHING, LABEL_HORIZON,
 )
 from models.lstm_model import LSTMModel
 
 logger = logging.getLogger(__name__)
+
+
+def _temporal_split_masks(dates, train_ratio: float = TRAIN_RATIO, purge_days: int = None):
+    """
+    按「时间」切分训练/验证集：较早的数据用于训练，较晚的数据用于验证。
+    这才是量化模型真正该用的切分方式——验证集严格位于训练集之后，
+    模拟实盘里"只能用历史预测未来"，避免用未来信息自欺欺人。
+
+    注意：合并后的样本是按股票拼接的（并非按时间排序），因此这里用
+    日期掩码而非按位置切分。
+
+    Purge（净化）：标签看未来 LABEL_HORIZON 个交易日，若某训练样本的标签
+    窗口跨进了验证期，会造成训练/验证信息重叠。故在切分边界前剔除约
+    purge_days 个自然日的训练样本，杜绝跨界泄漏。
+
+    Args:
+        dates:      (N,) 与样本对齐的日期（datetime64 或可被 pandas 解析）
+        train_ratio:训练集占的时间比例（按时间分位点取切分日）
+        purge_days: 边界净化的自然日数，None 时按 LABEL_HORIZON*2 估算
+
+    Returns:
+        (train_mask, val_mask, cutoff_ts)
+        train_mask/val_mask 为布尔数组；cutoff_ts 为切分日 pd.Timestamp
+    """
+    if purge_days is None:
+        # 5 个交易日 ≈ 7~10 个自然日（含周末/假期），留足缓冲
+        purge_days = LABEL_HORIZON * 2
+
+    d = pd.to_datetime(dates).values.astype("datetime64[ns]").astype("int64")
+    cutoff = np.quantile(d, train_ratio)
+    purge_ns = float(purge_days) * 86_400_000_000_000.0  # 自然日 → 纳秒
+
+    val_mask   = d >= cutoff
+    train_mask = d < (cutoff - purge_ns)
+    cutoff_ts  = pd.Timestamp(int(cutoff))
+    return train_mask, val_mask, cutoff_ts
 
 
 def _focal_loss(pred: torch.Tensor, target: torch.Tensor, pos_weight: float) -> torch.Tensor:
@@ -49,9 +86,13 @@ def _focal_loss(pred: torch.Tensor, target: torch.Tensor, pos_weight: float) -> 
 
 
 def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
-                _seed: int = None, _save_name: str = "lstm_best") -> LSTMModel:
+                _seed: int = None, _save_name: str = "lstm_best",
+                dates: np.ndarray = None) -> LSTMModel:
     """
-    训练 GRU 模型（时序分割，禁止随机打乱）。
+    训练 GRU 模型。
+
+    切分方式：传入 dates 时按**时间**切分（较早训练、较晚验证，真实检验
+    "用历史预测未来"）；未传 dates 时回退到按位置切分（仅向后兼容，不严谨）。
 
     Args:
         X:          (N, WINDOW_SIZE, FEATURE_DIM) 特征序列
@@ -59,6 +100,7 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
         resume:     True = 加载已有模型权重后继续训练
         _seed:      随机种子（集成训练内部使用，保证各模型多样性）
         _save_name: 保存文件名前缀（集成训练内部使用）
+        dates:      (N,) 与样本对齐的日期，用于时序切分（强烈建议传入）
 
     Returns:
         训练好的 LSTMModel（已保存到 models/saved/）
@@ -94,10 +136,22 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
             print(f"  CPU 线程沿用进程已有设置（{e}）")
     logger.info(f"使用设备: {device}")
 
-    n = len(X)
-    split = int(n * TRAIN_RATIO)
-    X_train, X_val = X[:split], X[split:]
-    y_train, y_val = y[:split], y[split:]
+    if dates is not None and len(dates) == len(X):
+        # 真·时序切分：较早的数据训练，较晚的数据验证
+        train_mask, val_mask, cutoff_ts = _temporal_split_masks(dates)
+        X_train, y_train = X[train_mask], y[train_mask]
+        X_val,   y_val   = X[val_mask],   y[val_mask]
+        msg = (f"📅 时序切分：以 {cutoff_ts.date()} 为界，训练={int(train_mask.sum())}条"
+               f"（更早），验证={int(val_mask.sum())}条（更晚）——真实检验「用历史预测未来」")
+        logger.info(msg)
+        print(f"  {msg}")
+    else:
+        # 回退：按位置切分（非严格时序，仅向后兼容）
+        n = len(X)
+        split = int(n * TRAIN_RATIO)
+        X_train, X_val = X[:split], X[split:]
+        y_train, y_val = y[:split], y[split:]
+        logger.warning("未提供日期信息，回退到按位置切分（非严格时序，验证 AUC 可能虚高）")
 
     logger.info(f"训练集: {len(X_train)}，验证集: {len(X_val)}")
     logger.info(f"正样本比例 - 训练: {y_train.mean():.3f}，验证: {y_val.mean():.3f}")
@@ -114,7 +168,10 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
     train_ds     = TensorDataset(X_tr, y_tr)
     # num_workers>0 让 CPU 预取数据，不阻塞 GPU；pin_memory 加速 CPU→GPU 传输
     _nw = min(4, os.cpu_count() or 1) if device.type == "cuda" else 0
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False,
+    # shuffle=True：验证集已按时间严格隔离在未来，训练集内部打乱无泄漏风险，
+    # 反而能改善 SGD 收敛与 BatchNorm 统计（此前按股票拼接+不打乱，
+    # 每个 batch 几乎是单只股票，梯度噪声大、批归一化失真）。
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=_nw, pin_memory=(device.type == "cuda"))
 
     model = LSTMModel().to(device)
@@ -234,7 +291,9 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
         model.load_state_dict(best_state)
 
     save_path = os.path.join(MODEL_SAVE_DIR, f"{_save_name}.pt")
-    torch.save(model.state_dict(), save_path)
+    # 剥掉 torch.compile 的 '_orig_mod.' 前缀再存，保证普通 LSTMModel 能直接加载
+    from models.lstm_model import strip_compile_prefix
+    torch.save(strip_compile_prefix(model.state_dict()), save_path)
     logger.info(f"模型已保存: {save_path}，最佳 Val AUC: {best_val_auc:.4f}")
 
     # 带时间戳的版本（仅主模型保存，避免集成时产生大量副本）
@@ -341,7 +400,8 @@ def predict_proba(model_or_models, X: np.ndarray, device: str = "cpu") -> np.nda
     return out
 
 
-def train_ensemble(X: np.ndarray, y: np.ndarray, n_models: int = None) -> list:
+def train_ensemble(X: np.ndarray, y: np.ndarray, n_models: int = None,
+                   dates: np.ndarray = None) -> list:
     """
     集成训练：用不同随机种子训练 N 个模型，推理时取概率均值。
     各模型在同样特征上从不同初始点出发，捕获不同的规律，
@@ -349,6 +409,7 @@ def train_ensemble(X: np.ndarray, y: np.ndarray, n_models: int = None) -> list:
 
     Args:
         n_models: 模型数量，None 时用 config.ENSEMBLE_N_MODELS
+        dates:    (N,) 与样本对齐的日期，用于时序切分（强烈建议传入）
 
     Returns:
         list of LSTMModel（均已 eval()）
@@ -356,6 +417,13 @@ def train_ensemble(X: np.ndarray, y: np.ndarray, n_models: int = None) -> list:
     import json, shutil
     if n_models is None:
         n_models = ENSEMBLE_N_MODELS
+
+    # 预先算好验证集掩码（与 train_model 内部完全一致），用于逐模型评估
+    if dates is not None and len(dates) == len(X):
+        _, _val_mask, _ = _temporal_split_masks(dates)
+    else:
+        _val_mask = np.zeros(len(X), dtype=bool)
+        _val_mask[int(len(X) * TRAIN_RATIO):] = True
 
     print(f"\n  集成训练模式：将依次训练 {n_models} 个不同随机种子的模型")
     print(f"  推理时自动取平均概率，效果优于任何单一模型\n")
@@ -370,14 +438,13 @@ def train_ensemble(X: np.ndarray, y: np.ndarray, n_models: int = None) -> list:
         print(f"\n{'='*56}")
         print(f"  集成训练 {i+1}/{n_models}   (随机种子 seed={seed})")
         print(f"{'='*56}\n")
-        m = train_model(X, y, _seed=seed, _save_name=f"lstm_ensemble_{i}")
+        m = train_model(X, y, _seed=seed, _save_name=f"lstm_ensemble_{i}", dates=dates)
         models.append(m)
 
-        # 用验证集快速评估当前模型 AUC
+        # 用验证集快速评估当前模型 AUC（与训练时同一套时序验证集）
         from sklearn.metrics import roc_auc_score
-        split   = int(len(X) * TRAIN_RATIO)
-        X_val   = X[split:]
-        y_val   = y[split:]
+        X_val   = X[_val_mask]
+        y_val   = y[_val_mask]
         probs   = predict_proba(m, X_val)
         try:
             auc = roc_auc_score(y_val, probs)

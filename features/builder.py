@@ -275,38 +275,46 @@ def build_all_stocks(stock_data_dict: dict, fit_scaler: bool = True):  # fit_sca
     对所有股票构建特征序列并合并。
     逐窗口归一化无需全局 scaler，fit_scaler 参数保留用于接口兼容。
 
+    同时返回每条序列对应的「日期」数组，供训练器做**真正的时序切分**
+    （用较早的数据训练、用较晚的数据验证，真实检验"用历史预测未来"的能力）。
+    注意：合并后的数组是「按股票」拼接的，本身并非按时间排序，
+    所以必须依赖 dates 数组才能正确切分，不能简单按位置切。
+
     Returns:
-        X: (N, WINDOW_SIZE, FEATURE_DIM)
-        y: (N,)
+        X:      (N, WINDOW_SIZE, FEATURE_DIM)
+        y:      (N,)
         scaler: None
+        dates:  (N,) datetime64[ns]，与 X/y 行对齐的样本日期
     """
-    all_X, all_y = [], []
+    all_X, all_y, all_dates = [], [], []
 
     for code, df in stock_data_dict.items():
         if len(df) < WINDOW_SIZE + LABEL_HORIZON + 10:
             logger.warning(f"[{code}] 数据太少（{len(df)}行），跳过")
             continue
         try:
-            X, y, _, _ = build_sequences(df)
+            X, y, _, dts = build_sequences(df)
             if len(X) > 0:
                 all_X.append(X)
                 all_y.append(y)
+                all_dates.append(pd.to_datetime(dts).values.astype("datetime64[ns]"))
                 logger.debug(f"[{code}] 构建 {len(X)} 条序列，正样本 {y.mean():.2%}")
         except Exception as e:
             logger.error(f"[{code}] 特征构建失败: {e}")
 
     if not all_X:
-        return np.array([]), np.array([]), None
+        return np.array([]), np.array([]), None, np.array([], dtype="datetime64[ns]")
 
     X_all = np.concatenate(all_X, axis=0)
     y_all = np.concatenate(all_y, axis=0)
+    dates_all = np.concatenate(all_dates)
 
     # 保存一个占位 scaler 文件，保持接口兼容
     scaler_path = os.path.join(MODEL_SAVE_DIR, "scaler.joblib")
     joblib.dump({"type": "window_zscore", "feature_dim": FEATURE_DIM}, scaler_path)
 
     logger.info(f"共构建 {len(X_all)} 条序列，正样本比例 {y_all.mean():.3f}")
-    return X_all, y_all, None
+    return X_all, y_all, None, dates_all
 
 
 def load_scaler():

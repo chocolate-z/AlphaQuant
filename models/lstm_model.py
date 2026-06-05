@@ -80,9 +80,25 @@ class LSTMModel(nn.Module):
         return self.sigmoid(out)
 
 
+def strip_compile_prefix(state: dict) -> dict:
+    """
+    去掉 torch.compile 包装产生的 '_orig_mod.' 键前缀。
+
+    train_model 里用 torch.compile 包装过模型，其 state_dict 的每个键都会带
+    '_orig_mod.' 前缀；普通 LSTMModel 的键没有该前缀，直接 load 会因键名不匹配
+    而报错。保存/加载时统一剥掉前缀即可兼容两种来源的权重文件。
+    """
+    prefix = "_orig_mod."
+    if any(k.startswith(prefix) for k in state):
+        return {(k[len(prefix):] if k.startswith(prefix) else k): v
+                for k, v in state.items()}
+    return state
+
+
 def load_model(model_path: str, device: str = "cpu") -> LSTMModel:
     model = LSTMModel()
     state = torch.load(model_path, map_location=device, weights_only=True)
+    state = strip_compile_prefix(state)   # 兼容 torch.compile 保存的旧权重
     model.load_state_dict(state)
     model.eval()
     return model

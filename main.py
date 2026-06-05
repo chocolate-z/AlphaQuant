@@ -106,7 +106,7 @@ def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = F
         return
 
     logger.info(f"共加载 {len(stock_data)} 只股票，正在构建特征...")
-    X, y, scaler = build_all_stocks(stock_data, fit_scaler=True)
+    X, y, scaler, dates = build_all_stocks(stock_data, fit_scaler=True)
 
     if len(X) == 0:
         logger.error("特征构建失败，数据不足（每只股票至少需要 40 条记录）")
@@ -114,7 +114,7 @@ def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = F
 
     logger.info(f"特征维度: {X.shape}，正样本比例: {y.mean():.3f}")
     logger.info("开始训练...")
-    train_model(X, y, resume=resume)
+    train_model(X, y, resume=resume, dates=dates)
     logger.info("训练完成！")
 
 
@@ -518,7 +518,7 @@ def run_train_ensemble():
 
     print("\n  正在加载数据...")
     stock_data = load_all_stocks()
-    X, y, _ = build_all_stocks(stock_data)
+    X, y, _, dates = build_all_stocks(stock_data)
 
     if len(X) == 0:
         logger.error("特征构建失败，数据不足")
@@ -526,7 +526,7 @@ def run_train_ensemble():
 
     logger.info(f"特征维度: {X.shape}，正样本比例: {y.mean():.3f}")
     print(f"\n  数据加载完成，共 {len(X)} 条样本，开始训练 {ENSEMBLE_N_MODELS} 个模型...\n")
-    train_ensemble(X, y)
+    train_ensemble(X, y, dates=dates)
     logger.info("集成训练完成！")
 
 
