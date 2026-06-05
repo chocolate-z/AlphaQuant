@@ -208,6 +208,27 @@ canvas{max-width:100%}
 .pill-up{background:var(--up-s);color:var(--up)}
 .pill-down{background:var(--down-s);color:var(--down)}
 .pill-flat{background:var(--hover);color:var(--sub)}
+/* ── 表格微观可视化 ── */
+.track{display:inline-block;width:110px;height:8px;background:var(--hover);border-radius:4px;
+  vertical-align:middle;overflow:hidden}
+.track .fill{display:block;height:100%;border-radius:4px;transition:width .3s}
+.minibar{display:inline-block;width:54px;height:6px;background:var(--hover);border-radius:3px;
+  vertical-align:middle;overflow:hidden;margin-left:9px}
+.minibar i{display:block;height:100%;border-radius:3px}
+/* ── 侧栏折叠（Xcode 风）── */
+.collapse-btn{align-self:flex-end;background:transparent;color:var(--sub);box-shadow:none;
+  padding:3px 9px;border-radius:7px;font-size:1.15em;line-height:1;margin-bottom:2px;transition:transform .25s,background .15s}
+.collapse-btn:hover{background:var(--hover);color:var(--text);box-shadow:none;transform:none}
+html.aq-collapsed .collapse-btn:hover{transform:rotate(180deg)}
+html.aq-collapsed .sidebar{width:66px;padding:18px 9px 22px}
+html.aq-collapsed .brand{justify-content:center;gap:0}
+html.aq-collapsed .brand .bwrap{display:none}
+html.aq-collapsed .nav-item{justify-content:center;padding:9px 0}
+html.aq-collapsed .nav-item span:not(.ic){display:none}
+html.aq-collapsed .nav-group{display:none}
+html.aq-collapsed .side-foot .ttl{display:none}
+html.aq-collapsed .seg{flex-direction:column}
+html.aq-collapsed .collapse-btn{align-self:center;transform:rotate(180deg)}
 /* ── 响应式 ── */
 @media(max-width:1080px){.control-layout{grid-template-columns:1fr}.control-side{position:static}}
 @media(max-width:820px){
@@ -261,8 +282,9 @@ def _sidebar(active: str = "") -> str:
             cls = "nav-item active" if key == active else "nav-item"
             rows.append(f'<a class="{cls}" href="{href}">{_icon(icon)}<span>{label}</span></a>')
     return (f'<aside class="sidebar">'
+            f'  <button type="button" class="collapse-btn" id="collapseBtn" title="折叠/展开侧栏">‹</button>'
             f'  <div class="brand"><div class="logo">A</div>'
-            f'    <div><div class="name">AlphaQuant</div><div class="sub">量化交易系统</div></div></div>'
+            f'    <div class="bwrap"><div class="name">AlphaQuant</div><div class="sub">量化交易系统</div></div></div>'
             f'  <nav>{"".join(rows)}</nav>'
             f'  <div class="side-foot"><div class="ttl">外观</div>'
             f'    <div class="seg" id="themeSeg">'
@@ -273,9 +295,11 @@ def _sidebar(active: str = "") -> str:
             f'</aside>')
 
 
-# 头部内联脚本：渲染前先套用已保存的主题，避免明暗闪烁
+# 头部内联脚本：渲染前先套用已保存的主题与折叠状态，避免明暗/布局闪烁
 _THEME_HEAD = ("<script>(function(){try{var t=localStorage.getItem('aq-theme');"
-               "if(t&&t!=='auto')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>")
+               "if(t&&t!=='auto')document.documentElement.setAttribute('data-theme',t);"
+               "if(localStorage.getItem('aq-sidebar')==='collapsed')"
+               "document.documentElement.classList.add('aq-collapsed');}catch(e){}})();</script>")
 
 # 尾部脚本：高亮当前选项 + 点击切换并持久化
 _THEME_BODY = """
@@ -296,6 +320,11 @@ _THEME_BODY = """
       document.querySelectorAll('#themeSeg button').forEach(function(x){x.classList.remove('active');});
       b.classList.add('active');
     });
+  });
+  var cb=document.getElementById('collapseBtn');
+  if(cb)cb.addEventListener('click',function(){
+    var on=document.documentElement.classList.toggle('aq-collapsed');
+    try{localStorage.setItem('aq-sidebar',on?'collapsed':'expanded');}catch(e){}
   });
 })();
 </script>"""
@@ -384,7 +413,7 @@ def holdings():
     state = _read_account_state()
     rows  = ""
     if not state.get("holdings"):
-        rows = "<tr><td colspan='7' style='text-align:center;color:#8b949e'>当前无持仓</td></tr>"
+        rows = "<tr><td colspan='7' style='text-align:center;color:var(--sub)'>当前无持仓</td></tr>"
     total_holding_pnl = 0.0
     for code, pos in state.get("holdings", {}).items():
         name   = get_stock_name(code)
@@ -395,14 +424,17 @@ def holdings():
         pct    = (curr - cost) / max(cost, 0.01) * 100
         cls    = "up" if pnl >= 0 else "down"
         total_holding_pnl += pnl
-        rows += (f"<tr><td><b>{code}</b></td><td style='color:#8b949e'>{name}</td>"
+        barpx  = min(abs(pct), 10) / 10 * 54   # |涨跌幅| 满格 10%
+        fillc  = "var(--up)" if pnl >= 0 else "var(--down)"
+        minibar = f"<span class='minibar'><i style='width:{barpx:.0f}px;background:{fillc}'></i></span>"
+        rows += (f"<tr><td><b>{code}</b></td><td style='color:var(--sub)'>{name}</td>"
                  f"<td>{shares:,}</td>"
                  f"<td>¥{cost:.2f}</td><td>¥{curr:.2f}</td>"
-                 f"<td class='{cls}'>{'+'if pnl>=0 else ''}¥{pnl:,.0f} ({pct:+.1f}%)</td>"
+                 f"<td class='{cls}'>{'+'if pnl>=0 else ''}¥{pnl:,.0f} ({pct:+.1f}%){minibar}</td>"
                  f"<td>{pos.get('buy_date','')}</td></tr>")
 
     cls_total = "up" if total_holding_pnl >= 0 else "down"
-    summary = (f"<p style='margin:8px 0;color:#8b949e'>持仓总浮盈亏："
+    summary = (f"<p style='margin:8px 0;color:var(--sub)'>持仓总浮盈亏："
                f"<span class='{cls_total}'>{'+'if total_holding_pnl>=0 else ''}¥{total_holding_pnl:,.0f}</span></p>")
     body = (f"<h1>当前持仓</h1>{summary}"
             f"<table><thead><tr><th>代码</th><th>名称</th><th>持仓数量</th><th>成本价</th>"
@@ -424,19 +456,19 @@ def signals():
 
     rows = ""
     if not sigs:
-        rows = "<tr><td colspan='4' style='text-align:center;color:#8b949e'>暂无信号缓存，请先运行模拟盘或手动触发：python main.py --mode signal</td></tr>"
+        rows = "<tr><td colspan='4' style='text-align:center;color:var(--sub)'>暂无信号缓存，请先运行模拟盘或手动触发：python main.py --mode signal</td></tr>"
     for code, prob in sorted(sigs.items(), key=lambda x: -x[1]):
-        bar_w = int(prob * 120)
         name  = get_stock_name(code)
         if prob > 0.65:
-            badge = f"<span class='badge-buy'>★ 买入</span>"
+            badge = f"<span class='badge-buy'>★ 买入</span>"; col = "var(--up)"
         elif prob < 0.35:
-            badge = f"<span class='badge-sell'>▼ 卖出</span>"
+            badge = f"<span class='badge-sell'>▼ 卖出</span>"; col = "var(--down)"
         else:
-            badge = f"<span class='badge-hold'>— 观望</span>"
+            badge = f"<span class='badge-hold'>— 观望</span>"; col = "var(--accent)"
+        barfill = f"<span class='track'><span class='fill' style='width:{prob*100:.0f}%;background:{col}'></span></span>"
         rows += (f"<tr><td><b>{code}</b></td>"
-                 f"<td style='color:#8b949e'>{name}</td>"
-                 f"<td><span class='bar' style='width:{bar_w}px'></span> {prob:.1%}</td>"
+                 f"<td style='color:var(--sub)'>{name}</td>"
+                 f"<td>{barfill} <b>{prob:.1%}</b></td>"
                  f"<td>{badge}</td></tr>")
 
     body = (f"<h1>今日信号</h1>{note}"
@@ -460,7 +492,7 @@ def trades():
         <label style='color:var(--sub)'>日期</label>
         <input name='date' type='date' value='{filter_date}'>
         <button type='submit'>筛选</button>
-        <a href='/trades' style='color:#8b949e;font-size:.9em'>清除筛选</a>
+        <a href='/trades' style='color:var(--accent);font-size:.9em;text-decoration:none'>清除筛选</a>
       </form>
       <span class='note'>共 {len(all_t)} 条记录</span>
     </div>"""
@@ -469,14 +501,15 @@ def trades():
     for t in reversed(all_t[-500:]):
         action = t.get("action", "")
         cls    = "up" if action == "buy" else "down"
-        badge  = f"<span class='badge-buy'>买入</span>" if action == "buy" else f"<span class='badge-sell'>卖出</span>"
+        badge  = (f"<span class='badge-buy'>↗ 买入</span>" if action == "buy"
+                  else f"<span class='badge-sell'>↘ 卖出</span>")
         rows += (f"<tr><td>{t.get('time','')}</td><td><b>{t.get('code','')}</b></td>"
                  f"<td>{badge}</td><td>¥{t.get('price','')}</td>"
                  f"<td>{t.get('shares','')}</td><td>{t.get('commission','')}</td>"
-                 f"<td>{t.get('reason','')}</td></tr>")
+                 f"<td style='color:var(--sub)'>{t.get('reason','')}</td></tr>")
 
     if not rows:
-        rows = "<tr><td colspan='7' style='text-align:center;color:#8b949e'>暂无交易记录</td></tr>"
+        rows = "<tr><td colspan='7' style='text-align:center;color:var(--sub)'>暂无交易记录</td></tr>"
 
     body = (f"<h1>历史交易记录</h1>{filter_form}"
             f"<table><thead><tr><th>时间</th><th>代码</th><th>操作</th>"
@@ -890,7 +923,7 @@ def control():
         d.images.forEach(img=>{
           h += '<div style="margin:10px 0"><div class="note">'+img.name+'</div>'
              + '<a href="'+img.url+'" target="_blank">'
-             + '<img src="'+img.url+'" style="max-width:100%;border:1px solid #30363d;border-radius:6px"></a></div>';
+             + '<img src="'+img.url+'" style="max-width:100%;border:1px solid var(--line);border-radius:10px"></a></div>';
         });
         reportsEl.innerHTML = h;
       });
