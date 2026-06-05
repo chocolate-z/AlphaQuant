@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     BATCH_SIZE, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR_PATIENCE,
     LEARNING_RATE, TRAIN_RATIO, MODEL_SAVE_DIR, REPORTS_DIR,
-    CPU_THREAD_RATIO,
+    CPU_THREAD_RATIO, WEIGHT_DECAY, NOISE_STD,
 )
 from models.lstm_model import LSTMModel
 
@@ -89,7 +89,7 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
         logger.warning("未找到已有模型文件，将从头开始训练")
         print("\n  ⚠ 未找到已有模型文件，将从头开始训练\n")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     # 余弦退火：学习率从 LEARNING_RATE 平滑降到 1e-6，避免震荡不收敛
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=MAX_EPOCHS, eta_min=1e-6
@@ -113,6 +113,9 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False) -> LSTMModel
 
         for xb, yb in train_loader:
             xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
+            # 数据增强：给输入加高斯噪声，迫使模型学稳健规律而非记忆噪声（仅训练时）
+            if NOISE_STD > 0:
+                xb = xb + torch.randn_like(xb) * NOISE_STD
             optimizer.zero_grad(set_to_none=True)   # 比 zero_grad() 省内存
 
             if use_amp:

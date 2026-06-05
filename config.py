@@ -53,14 +53,17 @@ LABEL_HORIZON    = 5              # 标签：未来N日
 LABEL_THRESHOLD  = 0.05           # 标签阈值（5%）
 
 # ── 模型 ─────────────────────────────────────────────
-LSTM_HIDDEN1         = 128
-LSTM_HIDDEN2         = 64
-FC_HIDDEN            = 32
-DROPOUT              = 0.3
-LEARNING_RATE        = 5e-4       # 降低初始学习率，更稳定收敛
+# 缩小容量 + 加强正则：金融数据信噪比极低，小模型反而泛化更好（防过拟合）
+LSTM_HIDDEN1         = 64         # 128→64：减少参数，抑制记忆噪声
+LSTM_HIDDEN2         = 32         # 64→32
+FC_HIDDEN            = 24
+DROPOUT              = 0.45       # 0.3→0.45：更强随机失活
+WEIGHT_DECAY         = 1e-3       # 1e-4→1e-3：更强 L2 正则
+NOISE_STD            = 0.05       # 训练时给输入加高斯噪声做数据增强（0=关闭）
+LEARNING_RATE        = 3e-4       # 5e-4→3e-4：放慢拟合，延迟过拟合
 BATCH_SIZE           = 512        # 更大batch：减少迭代次数，加快每轮速度
 MAX_EPOCHS           = 300        # 足够多轮次，靠早停控制
-EARLY_STOP_PATIENCE  = 30         # 更大耐心，避免过早停止
+EARLY_STOP_PATIENCE  = 20         # 验证早早见顶，缩短耐心避免空跑
 LR_PATIENCE          = 7
 TRAIN_RATIO          = 0.8
 
