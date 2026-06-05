@@ -90,6 +90,22 @@ def _print_menu():
 
 # ── 各功能 ───────────────────────────────────────────────────────────
 
+def _load_training_stocks(force_refresh: bool = False) -> dict:
+    """
+    完整训练的数据加载：优先使用本地缓存池（离线、数据更多、不触发限流），
+    缓存不足或强制刷新时回退到联网随机抽样。
+    """
+    from config import PREFER_CACHED_POOL, MAX_TRAIN_STOCKS
+    from data.loader import load_cached_stocks, load_all_stocks
+    if PREFER_CACHED_POOL and not force_refresh:
+        cached = load_cached_stocks(limit=MAX_TRAIN_STOCKS)
+        if len(cached) >= 50:
+            logger.info(f"训练数据来源：本地缓存池 {len(cached)} 只（离线、数据更多、不触发限流）")
+            return cached
+        logger.warning(f"本地缓存仅 {len(cached)} 只，不足以训练，回退到联网随机抽样")
+    return load_all_stocks(force_refresh=force_refresh, quick=False)
+
+
 def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = False):
     from data.loader import load_all_stocks
     from features.builder import build_all_stocks
@@ -99,7 +115,10 @@ def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = F
     logger.info(f"=== 训练模型 [{mode_tag}] ===")
 
     logger.info("正在下载/加载数据...")
-    stock_data = load_all_stocks(force_refresh=force_refresh, quick=quick)
+    if quick:
+        stock_data = load_all_stocks(force_refresh=force_refresh, quick=True)
+    else:
+        stock_data = _load_training_stocks(force_refresh=force_refresh)
 
     if not stock_data:
         logger.error("未获取到任何数据，请检查网络连接")
@@ -517,7 +536,7 @@ def run_train_ensemble():
     logger.info(f"=== 集成训练（共 {ENSEMBLE_N_MODELS} 个模型）===")
 
     print("\n  正在加载数据...")
-    stock_data = load_all_stocks()
+    stock_data = _load_training_stocks()
     X, y, _, dates = build_all_stocks(stock_data)
 
     if len(X) == 0:

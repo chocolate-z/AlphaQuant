@@ -45,6 +45,13 @@ QUICK_STOCK_COUNT   = 20    # 快速模式：随机抽取数量
 QUICK_HISTORY_YEARS = 3     # 快速模式：只拉取近 N 年数据
 STOCK_LIST_CACHE    = "stock_list.json"  # 全A股列表缓存文件名（存于 DATA_CACHE_DIR）
 
+# ── 训练数据来源 ─────────────────────────────────────
+# True  = 完整训练优先使用本地已缓存的全部个股（数据更多、完全离线、不触发限流）；
+#         随着缓存积累，训练样本会越来越多，比每次随机抽样更稳、更省时
+# False = 每次从全A股随机抽 FULL_STOCK_COUNT 只（需联网，搜狐会 503 限流拖慢）
+PREFER_CACHED_POOL  = True
+MAX_TRAIN_STOCKS    = 500   # 使用缓存池时最多取多少只（控制内存；越大越吃内存）
+
 # ── 数据 ─────────────────────────────────────────────
 START_DATE       = "20150101"
 WINDOW_SIZE      = 30             # 时间窗口（天）— 增加上下文
