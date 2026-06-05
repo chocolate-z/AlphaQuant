@@ -175,14 +175,12 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
                               num_workers=_nw, pin_memory=(device.type == "cuda"))
 
     model = LSTMModel().to(device)
-    # torch.compile 在 PyTorch 2.x + CPU 上可额外提速 20~40%
-    # 第一轮会多花约 30s 编译，之后每轮更快
-    if hasattr(torch, "compile"):
-        try:
-            model = torch.compile(model, backend="aot_eager")
-            print("  ✔ torch.compile 已启用（首轮编译约 30s，之后每轮更快）")
-        except Exception:
-            pass  # 编译失败静默降级，不影响训练
+    # 注：此处原本用 torch.compile(backend="aot_eager")，实测在本项目里**有害无益**：
+    #   1) aot_eager 是调试后端，不做算子融合，CPU 上基本没有提速；
+    #   2) 验证集整批前向 + 每轮最后一个不满 batch，形状多变，会触发反复重编译，
+    #      首轮要多花 ~3 分钟、之后每轮也更慢；
+    #   3) 它还会给 state_dict 键加 `_orig_mod.` 前缀，正是之前模型加载崩溃的根因。
+    # 故移除。如需提速可改用 backend="inductor" 并固定 batch 形状再单独评估。
 
     pretrained_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
     if resume and os.path.exists(pretrained_path):
