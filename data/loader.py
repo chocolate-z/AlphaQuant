@@ -652,12 +652,29 @@ def load_all_stocks(force_refresh: bool = False, quick: bool = False,
     return result
 
 
-_name_cache: dict = {}
+_NAME_CACHE_FILE = os.path.join(DATA_CACHE_DIR, "stock_names.json")
+_name_cache: dict = None
+
+
+def _load_name_cache() -> dict:
+    """名称缓存（持久化到磁盘，重启不丢、避免重复联网）。"""
+    global _name_cache
+    if _name_cache is None:
+        _name_cache = {}
+        if os.path.exists(_NAME_CACHE_FILE):
+            try:
+                with open(_NAME_CACHE_FILE, encoding="utf-8") as f:
+                    _name_cache = json.load(f)
+            except Exception:
+                _name_cache = {}
+    return _name_cache
+
 
 def get_stock_name(stock_code: str) -> str:
-    """通过新浪行情获取股票名称（字段[0]）。"""
-    if stock_code in _name_cache:
-        return _name_cache[stock_code]
+    """通过新浪行情获取股票名称（字段[0]）；结果持久化到磁盘缓存，避免重复联网。"""
+    cache = _load_name_cache()
+    if stock_code in cache:
+        return cache[stock_code]
     try:
         url  = f"https://hq.sinajs.cn/list={stock_code}"
         resp = requests.get(url, timeout=10, headers=_sina_headers())
@@ -667,9 +684,13 @@ def get_stock_name(stock_code: str) -> str:
             fields = m.group(1).split(",")
             if fields and fields[0].strip():
                 name = fields[0].strip()
-                _name_cache[stock_code] = name
+                cache[stock_code] = name
+                try:
+                    with open(_NAME_CACHE_FILE, "w", encoding="utf-8") as f:
+                        json.dump(cache, f, ensure_ascii=False)
+                except Exception:
+                    pass
                 return name
     except Exception:
         pass
-    _name_cache[stock_code] = stock_code
-    return stock_code
+    return stock_code   # 取不到就暂时返回代码（不写入缓存，下次还能再试）

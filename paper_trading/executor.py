@@ -99,7 +99,7 @@ def run_daily_execution():
     """
     from config import (DATA_CACHE_DIR, MAX_TRAIN_STOCKS, MAX_HOLDINGS, MAX_POSITION_RATIO,
                         STOP_LOSS_RATIO, TAKE_PROFIT_RATIO, RANK_SELL_BOTTOM,
-                        MIN_HOLD_DAYS, COOLDOWN_DAYS, USE_MARKET_FILTER)
+                        MIN_HOLD_DAYS, COOLDOWN_DAYS, USE_MARKET_FILTER, LIVE_SCAN_ALL_CACHED)
     from datetime import datetime as _dt
     import pandas as pd
     from data.loader import load_cached_stocks
@@ -121,15 +121,18 @@ def run_daily_execution():
     risk         = RiskManager(account)
     trade_logger = TradeLogger()
 
-    # ── 股票池 = 缓存的 sh/sz 主板（与回测/训练同口径）──
+    # ── 候选池 = 缓存的 sh/sz 主板（LIVE_SCAN_ALL_CACHED 时扫全部，否则抽样）──
     update_all_caches()
-    stock_data = load_cached_stocks(boards=("sh", "sz"), limit=MAX_TRAIN_STOCKS)
+    _limit = None if LIVE_SCAN_ALL_CACHED else MAX_TRAIN_STOCKS
+    stock_data = load_cached_stocks(boards=("sh", "sz"), limit=_limit)
     if not stock_data:
         logger.warning("无缓存股票数据，跳过")
         return
+    logger.info(f"候选池 {len(stock_data)} 只 sh/sz（动态流动性过滤后才下单）")
 
-    # 实时价（取不到则回退到缓存最新收盘）
-    rt = {c: q["close"] for c, q in fetch_all_realtime(list(stock_data)).items() if q.get("close", 0) > 0}
+    # 实时价：只取「当前持仓」（组合止损/卖出用）；买入候选的实时价稍后按需补（见买入段）。
+    # 这样候选池再大，实时请求量也只跟"持仓+候选"成正比，不会随全市场膨胀。
+    rt = {c: q["close"] for c, q in fetch_all_realtime(list(account.holdings)).items() if q.get("close", 0) > 0}
     def price_of(c):
         if c in rt:
             return rt[c]
@@ -238,12 +241,18 @@ def run_daily_execution():
             if (c in account.holdings and c not in account.today_bought
                     and held_days(c) >= MIN_HOLD_DAYS * 1.5 and (i / n) < RANK_SELL_BOTTOM):
                 do_sell(c, "rank_signal")
-        # 排名买入：信号最高、流动性达标、未持有、非冷却
-        for c in sorted(signals, key=lambda c: -signals[c]):
+        # 排名买入：信号最高、流动性达标、未持有、非冷却。
+        # 先选出候选（取前 3*MAX_HOLDINGS 足够买满），只给这一小批补实时价（候选池再大也不膨胀）。
+        cand = [c for c in sorted(signals, key=lambda c: -signals[c])
+                if c not in account.holdings and not in_cooldown(c) and liquid_now(c)][:MAX_HOLDINGS * 3]
+        miss = [c for c in cand if c not in rt]
+        if miss:
+            for code, q in fetch_all_realtime(miss).items():
+                if q.get("close", 0) > 0:
+                    rt[code] = q["close"]
+        for c in cand:
             if len(account.holdings) >= MAX_HOLDINGS:
                 break
-            if c in account.holdings or in_cooldown(c) or not liquid_now(c):
-                continue
             p = price_of(c)
             if p <= 0:
                 continue
