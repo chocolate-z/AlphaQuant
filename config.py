@@ -40,7 +40,7 @@ STOCK_POOL = [
 ]
 
 # ── 股票抽样 ──────────────────────────────────────────
-FULL_STOCK_COUNT    = 100   # 完整模式：从全A股随机抽取数量
+FULL_STOCK_COUNT    = 300   # 完整模式：从全A股随机抽取数量（更多样本→更强泛化）
 QUICK_STOCK_COUNT   = 20    # 快速模式：随机抽取数量
 QUICK_HISTORY_YEARS = 3     # 快速模式：只拉取近 N 年数据
 STOCK_LIST_CACHE    = "stock_list.json"  # 全A股列表缓存文件名（存于 DATA_CACHE_DIR）
@@ -48,7 +48,7 @@ STOCK_LIST_CACHE    = "stock_list.json"  # 全A股列表缓存文件名（存于
 # ── 数据 ─────────────────────────────────────────────
 START_DATE       = "20150101"
 WINDOW_SIZE      = 30             # 时间窗口（天）— 增加上下文
-FEATURE_DIM      = 16             # 特征维度（16个技术特征）
+FEATURE_DIM      = 19             # 特征维度（16个个股技术特征 + 3个市场环境特征）
 LABEL_HORIZON    = 5              # 标签：未来N日
 LABEL_THRESHOLD  = 0.05           # 标签阈值（5%）
 

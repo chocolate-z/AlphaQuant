@@ -1,6 +1,7 @@
 # 特征构建：16个技术特征 + 逐窗口Z-Score归一化，解决跨股票尺度问题
 
 import os
+import time
 import logging
 import numpy as np
 import pandas as pd
@@ -8,7 +9,8 @@ import joblib
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import WINDOW_SIZE, LABEL_HORIZON, LABEL_THRESHOLD, MODEL_SAVE_DIR, TRAIN_RATIO
+from config import (WINDOW_SIZE, LABEL_HORIZON, LABEL_THRESHOLD, MODEL_SAVE_DIR,
+                    TRAIN_RATIO, DATA_CACHE_DIR, START_DATE)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,67 @@ FEATURE_NAMES = [
     "bb_pos",       # 布林带位置：(收-下轨)/(上轨-下轨)，越高越强
 ]
 
-FEATURE_DIM = len(FEATURE_NAMES)  # 16
+# ── 市场环境特征（沪深300，全市场同日相同，编码大盘状态）──
+# 让模型知道"当下大盘环境"，区分个股涨是普涨还是逆势走强
+MARKET_FEATURES = [
+    "mkt_ret_1d",    # 大盘当日涨跌幅
+    "mkt_ret_5d",    # 大盘5日累计涨跌幅
+    "mkt_ma20_dev",  # 大盘偏离20日均线（牛熊环境）
+]
+
+FEATURE_NAMES = FEATURE_NAMES + MARKET_FEATURES
+
+FEATURE_DIM = len(FEATURE_NAMES)  # 19
+
+# 沪深300指数缓存（惰性加载，所有路径共享）
+_MARKET_CACHE = None
+
+
+def _load_market_df() -> pd.DataFrame:
+    """
+    惰性加载沪深300指数并计算市场环境特征，结果缓存到内存 + 磁盘（3天有效）。
+    所有调用 compute_raw_features 的路径（训练/推理/回测/诊断）自动共享。
+    返回 DataFrame[date, mkt_ret_1d, mkt_ret_5d, mkt_ma20_dev]；失败返回空表。
+    """
+    global _MARKET_CACHE
+    if _MARKET_CACHE is not None:
+        return _MARKET_CACHE
+
+    cache_file = os.path.join(DATA_CACHE_DIR, "market_features.csv")
+    if os.path.exists(cache_file) and time.time() - os.path.getmtime(cache_file) < 3 * 86400:
+        try:
+            _MARKET_CACHE = pd.read_csv(cache_file, parse_dates=["date"])
+            return _MARKET_CACHE
+        except Exception:
+            pass
+
+    try:
+        from data.index_fetcher import fetch_index_history
+        from datetime import datetime
+        idx = fetch_index_history("cn_s_sh000300",
+                                  START_DATE.replace("-", ""),
+                                  datetime.today().strftime("%Y%m%d"))
+        if idx is None or idx.empty:
+            logger.warning("沪深300指数拉取失败，市场特征将填 0")
+            _MARKET_CACHE = pd.DataFrame(columns=["date"] + MARKET_FEATURES)
+            return _MARKET_CACHE
+
+        idx = idx.sort_values("date").reset_index(drop=True)
+        c = idx["close"]
+        out = pd.DataFrame({"date": idx["date"]})
+        out["mkt_ret_1d"]   = c.pct_change().fillna(0).clip(-0.1, 0.1)
+        out["mkt_ret_5d"]   = c.pct_change(5).fillna(0).clip(-0.2, 0.2)
+        ma20 = c.rolling(20, min_periods=1).mean()
+        out["mkt_ma20_dev"] = (c / ma20 - 1).fillna(0).clip(-0.2, 0.2)
+
+        out.to_csv(cache_file, index=False)
+        logger.info(f"市场特征已加载（沪深300，{len(out)} 个交易日）")
+        _MARKET_CACHE = out
+        return out
+    except Exception as e:
+        logger.warning(f"市场特征加载异常: {e}，将填 0")
+        _MARKET_CACHE = pd.DataFrame(columns=["date"] + MARKET_FEATURES)
+        return _MARKET_CACHE
 
 
 def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -109,6 +171,15 @@ def compute_raw_features(df: pd.DataFrame) -> pd.DataFrame:
     lower = ma20 - 2 * std20
     band  = (upper - lower).replace(0, np.nan)
     df["bb_pos"] = ((close - lower) / band).fillna(0.5).clip(0, 1)
+
+    # ── 市场环境特征（按日期 merge 沪深300，缺失填 0）──────
+    mkt = _load_market_df()
+    if mkt is not None and not mkt.empty and "date" in df.columns:
+        df = df.merge(mkt, on="date", how="left")
+    for col in MARKET_FEATURES:
+        if col not in df.columns:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
     return df
 
