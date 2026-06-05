@@ -55,9 +55,15 @@ def train_model(X: np.ndarray, y: np.ndarray, resume: bool = False,
             n_threads = max(1, int(total * CPU_THREAD_RATIO))
         else:
             n_threads = max(1, min(int(CPU_THREAD_RATIO), total))
-        torch.set_num_threads(n_threads)
-        torch.set_num_interop_threads(max(1, n_threads // 2))
-        print(f"  CPU 线程: {n_threads}/{total} 核")
+        # 这两个接口只能在 torch 并行工作开始前调用一次；
+        # 网页端在常驻进程里训练时 torch 可能已启动并行，故用 try 容错，
+        # 失败仅表示沿用已有线程设置，不影响训练正确性。
+        try:
+            torch.set_num_threads(n_threads)
+            torch.set_num_interop_threads(max(1, n_threads // 2))
+            print(f"  CPU 线程: {n_threads}/{total} 核")
+        except RuntimeError as e:
+            print(f"  CPU 线程沿用进程已有设置（{e}）")
     logger.info(f"使用设备: {device}")
 
     n = len(X)

@@ -71,93 +71,178 @@ def _read_signal_cache() -> dict:
 _CSS = """
 <style>
 :root{
-  --bg:#f5f5f7; --card:#ffffff; --text:#1d1d1f; --sub:#6e6e73; --line:#d2d2d7;
-  --accent:#0071e3; --accent-h:#0077ed; --up:#34c759; --down:#ff3b30; --warn:#ff9f0a;
-  --radius:18px; --shadow:0 2px 16px rgba(0,0,0,.06); --shadow-lg:0 8px 30px rgba(0,0,0,.10);
+  --bg:#f5f5f7; --card:#ffffff; --card-2:#fbfbfd; --text:#1d1d1f; --sub:#6e6e73; --faint:#8e8e93;
+  --line:rgba(0,0,0,.08); --hairline:rgba(0,0,0,.06); --hover:rgba(0,0,0,.045);
+  --accent:#0071e3; --accent-h:#0077ed; --accent-soft:rgba(0,113,227,.12);
+  --up:#1d8a3f; --up-s:rgba(52,199,89,.14); --down:#d70015; --down-s:rgba(255,59,48,.12); --warn:#b25e00;
+  --sidebar:rgba(246,246,248,.75); --radius:18px; --radius-sm:12px;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 6px 20px rgba(0,0,0,.05);
+  --shadow-lg:0 8px 36px rgba(0,0,0,.12);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#000000; --card:#1c1c1e; --card-2:#161618; --text:#f5f5f7; --sub:#a1a1a6; --faint:#8e8e93;
+    --line:rgba(255,255,255,.1); --hairline:rgba(255,255,255,.07); --hover:rgba(255,255,255,.06);
+    --accent:#0a84ff; --accent-h:#3a9bff; --accent-soft:rgba(10,132,255,.22);
+    --up:#30d158; --up-s:rgba(48,209,88,.18); --down:#ff453a; --down-s:rgba(255,69,58,.18); --warn:#ffd60a;
+    --sidebar:rgba(28,28,30,.72);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.4);
+    --shadow-lg:0 10px 40px rgba(0,0,0,.6);
+  }
 }
 *{box-sizing:border-box}
+html{scroll-behavior:smooth}
 body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","PingFang SC","Helvetica Neue",Helvetica,Arial,sans-serif;
-  background:var(--bg);color:var(--text);margin:0;-webkit-font-smoothing:antialiased;letter-spacing:-.011em}
-nav{background:rgba(255,255,255,.72);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
-  padding:0 28px;height:54px;display:flex;gap:26px;align-items:center;border-bottom:1px solid rgba(0,0,0,.08);
-  position:sticky;top:0;z-index:100}
-nav .brand{color:var(--text);font-weight:600;font-size:1.05em;display:flex;align-items:center;gap:6px}
-nav a{color:var(--sub);text-decoration:none;font-size:.88em;font-weight:450;transition:color .2s}
-nav a:hover{color:var(--text)}
-.wrap{max-width:1280px;margin:34px auto;padding:0 24px}
-h1{color:var(--text);font-weight:600;font-size:2.1em;margin:0 0 6px;letter-spacing:-.022em}
-h2{color:var(--text);font-size:1.18em;font-weight:600;margin:26px 0 12px;letter-spacing:-.015em}
+  background:var(--bg);color:var(--text);margin:0;-webkit-font-smoothing:antialiased;letter-spacing:-.012em;
+  font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+a{color:inherit}
+/* ── 应用骨架：侧栏 + 内容 ── */
+.app{display:flex;min-height:100vh}
+.sidebar{width:248px;flex-shrink:0;position:sticky;top:0;align-self:flex-start;height:100vh;overflow-y:auto;
+  background:var(--sidebar);backdrop-filter:saturate(180%) blur(24px);-webkit-backdrop-filter:saturate(180%) blur(24px);
+  border-right:1px solid var(--line);padding:18px 14px 22px;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:11px;padding:6px 10px 16px}
+.brand .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(145deg,#0a84ff,#0a40d8);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:1.05em;
+  box-shadow:0 3px 8px rgba(10,90,255,.4);flex-shrink:0}
+.brand .name{font-weight:600;font-size:1.04em;letter-spacing:-.02em;line-height:1.1}
+.brand .sub{font-size:.7em;color:var(--faint);margin-top:1px}
+.nav-group{font-size:.68em;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);
+  padding:14px 12px 5px}
+.nav-item{display:flex;align-items:center;gap:11px;padding:8px 12px;border-radius:9px;color:var(--text);
+  text-decoration:none;font-size:.91em;font-weight:450;transition:background .15s,color .15s;margin:1px 0}
+.nav-item .ic{width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:var(--sub);flex-shrink:0}
+.nav-item:hover{background:var(--hover)}
+.nav-item.active{background:var(--accent);color:#fff;font-weight:500;box-shadow:0 2px 8px rgba(0,113,227,.3)}
+.nav-item.active .ic{color:#fff}
+.content{flex:1;min-width:0;padding:46px 52px 70px;max-width:1240px;width:100%}
+/* ── 标题 ── */
+h1{color:var(--text);font-weight:700;font-size:2.5em;margin:0 0 4px;letter-spacing:-.028em;line-height:1.05}
+h2{color:var(--text);font-size:1.2em;font-weight:600;margin:30px 0 12px;letter-spacing:-.018em}
+/* ── 表格（分组内嵌圆角）── */
 table{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0;font-size:.9em;
   background:var(--card);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
-th{background:transparent;color:var(--sub);padding:13px 16px;text-align:left;font-weight:500;
-   border-bottom:1px solid var(--line);position:sticky;top:54px;z-index:10}
-td{padding:13px 16px;border-bottom:1px solid #f0f0f2}
+th{background:var(--card-2);color:var(--sub);padding:13px 18px;text-align:left;font-weight:500;font-size:.92em;
+   border-bottom:1px solid var(--hairline)}
+td{padding:13px 18px;border-bottom:1px solid var(--hairline)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:#fafafa}
-.cards{display:flex;flex-wrap:wrap;gap:14px;margin:18px 0}
-.card{background:var(--card);border-radius:var(--radius);padding:18px 22px;min-width:160px;box-shadow:var(--shadow)}
-.val{font-size:1.7em;font-weight:600;color:var(--text);margin:4px 0;letter-spacing:-.02em}
-.lbl{color:var(--sub);font-size:.82em}
+tbody tr{transition:background .12s}
+tbody tr:hover td{background:var(--hover)}
+/* ── 数据卡片 ── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px;margin:20px 0}
+.card{background:var(--card);border-radius:var(--radius);padding:18px 22px;box-shadow:var(--shadow);
+  transition:transform .25s cubic-bezier(.2,.7,.3,1),box-shadow .25s}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg)}
+.val{font-size:1.75em;font-weight:600;color:var(--text);margin:5px 0 0;letter-spacing:-.025em}
+.lbl{color:var(--sub);font-size:.8em;font-weight:500}
 .up{color:var(--up)}.down{color:var(--down)}.neutral{color:var(--sub)}
 .bar{display:inline-block;background:var(--accent);height:8px;border-radius:4px;vertical-align:middle}
-.badge-buy{background:rgba(52,199,89,.14);color:#248a3d;padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:500}
-.badge-sell{background:rgba(255,59,48,.13);color:#d70015;padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:500}
-.badge-hold{background:rgba(0,0,0,.06);color:var(--sub);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:500}
-input,select{background:#fff;border:1px solid var(--line);color:var(--text);padding:8px 12px;
+.badge-buy{background:var(--up-s);color:var(--up);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
+.badge-sell{background:var(--down-s);color:var(--down);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
+.badge-hold{background:var(--hover);color:var(--sub);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
+/* ── 表单控件 ── */
+input,select{background:var(--card);border:1px solid var(--line);color:var(--text);padding:8px 12px;
   border-radius:10px;font-size:.9em;font-family:inherit;transition:border-color .15s,box-shadow .15s}
-input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,113,227,.15)}
+input::placeholder{color:var(--faint)}
+input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
 button{background:var(--accent);color:#fff;border:none;padding:8px 20px;border-radius:980px;
-  cursor:pointer;font-size:.9em;font-weight:500;font-family:inherit;transition:background .2s,transform .1s}
-button:hover{background:var(--accent-h)}
-button:active{transform:scale(.97)}
-button:disabled{background:#e8e8ed;color:#aeaeb2;cursor:not-allowed;transform:none}
+  cursor:pointer;font-size:.9em;font-weight:500;font-family:inherit;transition:background .2s,transform .08s,box-shadow .2s;
+  box-shadow:0 1px 3px rgba(0,0,0,.12)}
+button:hover{background:var(--accent-h);box-shadow:0 2px 8px rgba(0,113,227,.3)}
+button:active{transform:scale(.96)}
+button:disabled{background:var(--hover);color:var(--faint);cursor:not-allowed;transform:none;box-shadow:none}
 button.danger{background:var(--down)}button.danger:hover{background:#ff5147}
 .filter-bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
-.note{color:var(--sub);font-size:.85em;margin:8px 0;line-height:1.5}
+.note{color:var(--sub);font-size:.86em;margin:8px 0;line-height:1.55}
 canvas{max-width:100%}
+/* ── 面板 ── */
 .panel{background:var(--card);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);
   transition:box-shadow .25s,transform .25s}
 .panel:hover{box-shadow:var(--shadow-lg)}
 .panel h2{margin:0 0 4px 0;color:var(--text);font-size:1.02em}
 .panel .desc{color:var(--sub);font-size:.82em;margin:0 0 12px 0}
 .panel form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
-/* 操作中心：左操作 + 右固定日志 */
-.control-layout{display:grid;grid-template-columns:1fr 470px;gap:26px;align-items:start;margin-top:10px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
+/* ── 操作中心：左操作 + 右固定日志 ── */
+.control-layout{display:grid;grid-template-columns:1fr 440px;gap:24px;align-items:start;margin-top:10px}
 .control-actions{min-width:0}
-.control-side{position:sticky;top:78px;display:flex;flex-direction:column;gap:14px}
+.control-side{position:sticky;top:24px;display:flex;flex-direction:column;gap:14px}
 #console{background:#1d1d1f;border-radius:14px;padding:16px 18px;
-  font-family:"SF Mono",ui-monospace,"Menlo","Consolas",monospace;font-size:.8em;color:#e8e8ed;
-  white-space:pre-wrap;word-break:break-all;height:360px;overflow-y:auto;line-height:1.55;
-  box-shadow:inset 0 1px 3px rgba(0,0,0,.4)}
+  font-family:"SF Mono",ui-monospace,"Menlo","Consolas",monospace;font-size:.78em;color:#e8e8ed;
+  white-space:pre-wrap;word-break:break-all;height:340px;overflow-y:auto;line-height:1.6;
+  box-shadow:inset 0 1px 4px rgba(0,0,0,.5)}
 #console::-webkit-scrollbar{width:8px}#console::-webkit-scrollbar-thumb{background:#48484a;border-radius:4px}
-.status-running{color:var(--warn);font-weight:500}.status-done{color:var(--up);font-weight:500}
-.status-error{color:var(--down);font-weight:500}
+.status-running{color:var(--warn);font-weight:600}.status-done{color:var(--up);font-weight:600}
+.status-error{color:var(--down);font-weight:600}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--warn);border-top-color:transparent;
-  border-radius:50%;animation:sp 0.8s linear infinite;vertical-align:middle;margin-right:6px}
+  border-radius:50%;animation:sp .8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
-@media(max-width:980px){.control-layout{grid-template-columns:1fr}.control-side{position:static}}
+/* ── 响应式 ── */
+@media(max-width:1080px){.control-layout{grid-template-columns:1fr}.control-side{position:static}}
+@media(max-width:820px){
+  .app{flex-direction:column}
+  .sidebar{width:100%;height:auto;position:sticky;top:0;flex-direction:row;align-items:center;gap:4px;
+    overflow-x:auto;border-right:none;border-bottom:1px solid var(--line);padding:8px 12px}
+  .brand{padding:4px 8px;flex-shrink:0}.brand .sub{display:none}
+  .nav-group{display:none}
+  .nav-item{flex-shrink:0;padding:7px 11px}.nav-item span:not(.ic){font-size:.85em}
+  .content{padding:28px 22px 60px}h1{font-size:2em}
+}
 </style>"""
-
-_NAV = """
-<nav>
-  <span class="brand"> AlphaQuant</span>
-  <a href="/">账户总览</a>
-  <a href="/holdings">当前持仓</a>
-  <a href="/signals">今日信号</a>
-  <a href="/trades">历史交易</a>
-  <a href="/performance">模型表现</a>
-  <a href="/control">⚙ 操作中心</a>
-</nav>"""
 
 _CHARTJS = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>'
 
-def _page(title: str, body: str, auto_refresh: int = 0) -> str:
+# 单色线性图标（SF Symbols 风格，stroke=currentColor，激活时自动转白）
+_ICONS = {
+    "overview": '<rect x="3" y="3" width="7" height="9" rx="1.6"/><rect x="14" y="3" width="7" height="5" rx="1.6"/><rect x="14" y="11" width="7" height="10" rx="1.6"/><rect x="3" y="15" width="7" height="6" rx="1.6"/>',
+    "holdings": '<rect x="3" y="7" width="18" height="13" rx="2.2"/><path d="M8 7V5.5A2 2 0 0 1 10 3.5h4A2 2 0 0 1 16 5.5V7"/>',
+    "signal":   '<circle cx="12" cy="12" r="1.8"/><path d="M16.6 7.4a6.5 6.5 0 0 1 0 9.2M7.4 16.6a6.5 6.5 0 0 1 0-9.2"/>',
+    "perf":     '<polyline points="3 16.5 9 10.5 13 14.5 21 6.5"/><polyline points="15.5 6.5 21 6.5 21 12"/>',
+    "trades":   '<path d="M5.5 3h13v18l-2.6-1.8L13.3 21 11 19.2 8.7 21 6.1 19.2 3.5 21V5z" transform="translate(1 0)"/><line x1="9" y1="8.5" x2="16" y2="8.5"/><line x1="9" y1="12.5" x2="16" y2="12.5"/>',
+    "control":  '<line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="9" cy="8" r="2.3"/><circle cx="15" cy="16" r="2.3"/>',
+}
+
+def _icon(name: str) -> str:
+    return (f'<span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" '
+            f'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+            f'{_ICONS.get(name, "")}</svg></span>')
+
+# 导航定义：(key, 路由, 图标, 文字)
+_NAV_ITEMS = [
+    ("group", "概览", "", ""),
+    ("overview",  "/",            "overview", "账户总览"),
+    ("holdings",  "/holdings",    "holdings", "当前持仓"),
+    ("group", "智能", "", ""),
+    ("signals",   "/signals",     "signal",   "今日信号"),
+    ("performance", "/performance","perf",     "模型表现"),
+    ("group", "记录", "", ""),
+    ("trades",    "/trades",      "trades",   "历史交易"),
+    ("group", "操作", "", ""),
+    ("control",   "/control",     "control",  "操作中心"),
+]
+
+def _sidebar(active: str = "") -> str:
+    rows = []
+    for key, href, icon, label in _NAV_ITEMS:
+        if key == "group":
+            rows.append(f'<div class="nav-group">{href}</div>')
+        else:
+            cls = "nav-item active" if key == active else "nav-item"
+            rows.append(f'<a class="{cls}" href="{href}">{_icon(icon)}<span>{label}</span></a>')
+    return (f'<aside class="sidebar">'
+            f'  <div class="brand"><div class="logo">A</div>'
+            f'    <div><div class="name">AlphaQuant</div><div class="sub">量化交易系统</div></div></div>'
+            f'  <nav>{"".join(rows)}</nav>'
+            f'</aside>')
+
+
+def _page(title: str, body: str, active: str = "", auto_refresh: int = 0) -> str:
     refresh = f'<meta http-equiv="refresh" content="{auto_refresh}">' if auto_refresh else ""
     return (f"<!DOCTYPE html><html lang='zh-CN'><head>"
-            f"<meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
+            f"<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>{title} — AlphaQuant</title>{refresh}{_CSS}</head>"
-            f"<body>{_NAV}<div class='wrap'>{body}</div></body></html>")
+            f"<body><div class='app'>{_sidebar(active)}"
+            f"<main class='content'>{body}</main></div></body></html>")
 
 
 # ── 路由 ──────────────────────────────────────────────
@@ -194,7 +279,7 @@ def index():
     chart = f"""
     <h2>资产净值曲线（近90日）</h2>
     {_CHARTJS}
-    <canvas id="navChart" height="100"></canvas>
+    <div class="panel"><canvas id="navChart" height="100"></canvas></div>
     <script>
     new Chart(document.getElementById('navChart'),{{
       type:'line',
@@ -212,7 +297,7 @@ def index():
     }});
     </script>"""
 
-    return _page("账户总览", f"<h1>账户总览</h1>{cards}{chart}", auto_refresh=300)
+    return _page("账户总览", f"<h1>账户总览</h1>{cards}{chart}", active="overview", auto_refresh=300)
 
 
 @app.route("/holdings")
@@ -245,7 +330,7 @@ def holdings():
             f"<table><thead><tr><th>代码</th><th>名称</th><th>持仓数量</th><th>成本价</th>"
             f"<th>当前价</th><th>浮动盈亏</th><th>买入日期</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
-    return _page("持仓", body, auto_refresh=120)
+    return _page("持仓", body, active="holdings", auto_refresh=120)
 
 
 @app.route("/signals")
@@ -279,7 +364,7 @@ def signals():
     body = (f"<h1>今日信号</h1>{note}"
             f"<table><thead><tr><th>股票代码</th><th>名称</th><th>买入概率</th><th>建议</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
-    return _page("今日信号", body)
+    return _page("今日信号", body, active="signals")
 
 
 @app.route("/trades")
@@ -319,7 +404,7 @@ def trades():
             f"<table><thead><tr><th>时间</th><th>代码</th><th>操作</th>"
             f"<th>价格</th><th>数量</th><th>手续费</th><th>原因</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
-    return _page("历史交易", body)
+    return _page("历史交易", body, active="trades")
 
 
 @app.route("/performance")
@@ -399,7 +484,7 @@ def performance():
     chart = f"""
     <h2>每日盈亏状态（近30日，1=盈利，0=亏损）</h2>
     {_CHARTJS}
-    <canvas id="wChart" height="80"></canvas>
+    <div class="panel"><canvas id="wChart" height="80"></canvas></div>
     <script>
     new Chart(document.getElementById('wChart'),{{
       type:'bar',
@@ -418,7 +503,7 @@ def performance():
     }});
     </script>"""
 
-    return _page("模型表现", f"<h1>模型表现</h1>{cards}{chart}")
+    return _page("模型表现", f"<h1>模型表现</h1>{cards}{chart}", active="performance")
 
 
 # ── 操作中心（把命令行菜单搬到网页）────────────────────────────────────
@@ -783,7 +868,7 @@ def control():
             f"  <div class='control-side'>{console}</div>"
             f"</div>"
             f"{script}")
-    return _page("操作中心", body)
+    return _page("操作中心", body, active="control")
 
 
 def start_dashboard():
