@@ -1,4 +1,4 @@
-# 历史回测引擎：预计算信号、T+1、手续费、涨跌停、止损、基准对比
+# 历史回测引擎：预计算信号、T+1、手续费、涨跌停、止损、止盈、基准对比
 
 import os
 import logging
@@ -16,14 +16,14 @@ setup_chinese_font()
 from config import (
     INIT_CAPITAL, COMMISSION_BUY, COMMISSION_SELL,
     WINDOW_SIZE, BUY_THRESHOLD, SELL_THRESHOLD,
-    STOP_LOSS_RATIO, MAX_POSITION_RATIO, MAX_HOLDINGS,
+    STOP_LOSS_RATIO, TAKE_PROFIT_RATIO, MAX_POSITION_RATIO, MAX_HOLDINGS,
     RELATIVE_RANK_MODE, TOP_N_BUY, RANK_SELL_BOTTOM,
     REPORTS_DIR,
 )
 from models.lstm_model import LSTMModel
 from models.trainer import predict_proba
 from features.builder import build_sequences, FEATURE_NAMES
-from sklearn.preprocessing import MinMaxScaler
+from data.loader import get_stock_name
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,11 @@ class BacktestEngine:
     改进：
     - 预计算所有信号（O(S*N) 而非 O(S*D*N)），速度提升 ~100x
     - 处理涨跌停（涨停无法买入，跌停无法卖出）
+    - 支持止损 + 止盈
     - 支持沪深300基准对比
     """
 
-    def __init__(self, stock_data: dict, model: LSTMModel, scaler: MinMaxScaler,
+    def __init__(self, stock_data: dict, model: LSTMModel, scaler=None,
                  benchmarks: dict = None):
         """
         Args:
@@ -54,7 +55,7 @@ class BacktestEngine:
         self.stock_data = stock_data
         self.model      = model
         self.scaler     = scaler
-        self.benchmarks = benchmarks or {}   # 多基准字典
+        self.benchmarks = benchmarks or {}
         self.cash         = float(INIT_CAPITAL)
         self.holdings     = {}
         self.today_bought = set()
@@ -156,7 +157,6 @@ class BacktestEngine:
         Returns:
             {(code, date): probability}
         """
-        from sklearn.preprocessing import MinMaxScaler as _MMS
         signal_table = {}
 
         for code, df in self.stock_data.items():
@@ -225,7 +225,7 @@ class BacktestEngine:
             total_value = self._portfolio_value(date)
 
             # ── 卖出判断 ────────────────────────────────
-            # 单股止损（T+1保护，两种模式均执行）
+            # 止损 + 止盈（T+1保护，两种模式均执行）
             for code in list(self.holdings.keys()):
                 if code in self.today_bought:
                     continue
@@ -235,21 +235,20 @@ class BacktestEngine:
                 pnl = (price - self.holdings[code]["cost"]) / self.holdings[code]["cost"]
                 if pnl < STOP_LOSS_RATIO:
                     self._sell(code, price, date, reason="stop_loss")
+                elif pnl >= TAKE_PROFIT_RATIO:
+                    self._sell(code, price, date, reason="take_profit")
 
             if RELATIVE_RANK_MODE:
-                # 相对排名模式：持仓中排名垫底（低于 RANK_SELL_BOTTOM）的卖出
                 sorted_codes = sorted(signals.keys(), key=lambda c: signals[c])
                 n = len(sorted_codes)
                 for i, code in enumerate(sorted_codes):
                     if code not in self.holdings or code in self.today_bought:
                         continue
-                    # 该股票在当日排名处于后 RANK_SELL_BOTTOM 分位
                     if (i / max(n, 1)) < RANK_SELL_BOTTOM:
                         price = self._get_close(code, date)
                         if price > 0:
                             self._sell(code, price, date, reason="rank_signal")
             else:
-                # 绝对阈值模式
                 for code in list(self.holdings.keys()):
                     if code in self.today_bought:
                         continue
@@ -262,7 +261,6 @@ class BacktestEngine:
             ranked = sorted(signals.items(), key=lambda x: -x[1])
 
             if RELATIVE_RANK_MODE:
-                # 相对排名模式：每天买概率最高的前 TOP_N_BUY 只
                 candidates = [
                     (code, prob) for code, prob in ranked
                     if code not in self.holdings and code not in self.today_bought
@@ -274,7 +272,6 @@ class BacktestEngine:
                     if price > 0:
                         self._buy(code, price, date, total_value)
             else:
-                # 绝对阈值模式
                 for code, prob in ranked:
                     if len(self.holdings) >= MAX_HOLDINGS:
                         break
@@ -289,7 +286,6 @@ class BacktestEngine:
 
         nav_df = pd.DataFrame(self.nav_curve, columns=["date", "nav"])
 
-        # 将各基准指数对齐到回测日期，统一归一化为净值曲线
         bm_navs = {}
         for name, df in self.benchmarks.items():
             if df.empty:
@@ -298,7 +294,6 @@ class BacktestEngine:
             if s.notna().any() and s.iloc[0] > 0:
                 bm_navs[name] = (s / s.iloc[0]) * INIT_CAPITAL
 
-        # 取沪深300（如有）作为夏普/超额收益计算基准
         hs300_nav = bm_navs.get("沪深300")
 
         metrics = compute_metrics(nav_df, self.trades, benchmark_nav=hs300_nav)
@@ -316,6 +311,8 @@ class BacktestEngine:
         df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
         df["action_cn"] = df["action"].map({"buy": "买入", "sell": "卖出"})
         df["commission"] = df["commission"].round(2)
+        # 获取股票名称
+        df["name"] = df["code"].apply(lambda c: get_stock_name(c)[:5])
 
         # 计算每笔卖出盈亏（匹配最近一次买入）
         pnl_map = {}
@@ -330,17 +327,18 @@ class BacktestEngine:
                 df.loc[idx, "pnl_pct"] = (row["price"] / buy_p - 1) * 100
 
         # 终端输出
-        print("\n" + "=" * 72)
-        print(f"  {'日期':<12} {'代码':<10} {'操作':<4} {'价格':>8} {'股数':>8} {'手续费':>8} {'涨跌%':>7} {'原因'}")
-        print("-" * 72)
+        print("\n" + "=" * 80)
+        print(f"  {'日期':<12} {'代码':<10} {'名称':<8} {'操作':<4} {'价格':>8} {'股数':>8} {'手续费':>8} {'涨跌%':>7} {'原因'}")
+        print("-" * 80)
         for _, r in df.iterrows():
-            reason = r.get("reason", "") or ""
-            pnl    = r.get("pnl_pct", float("nan"))
+            reason  = r.get("reason", "") or ""
+            pnl     = r.get("pnl_pct", float("nan"))
             pnl_str = f"{pnl:+.2f}%" if not pd.isna(pnl) else "  —  "
-            print(f"  {r['date']:<12} {r['code']:<10} {r['action_cn']:<4} "
+            name    = r.get("name", "")
+            print(f"  {r['date']:<12} {r['code']:<10} {name:<8} {r['action_cn']:<4} "
                   f"{r['price']:>8.2f} {int(r['shares']):>8} {r['commission']:>8.2f} "
                   f"{pnl_str:>7} {reason}")
-        print("=" * 72)
+        print("=" * 80)
         print(f"  共 {len(df)} 笔交易（买入 {(df['action']=='buy').sum()} 笔，"
               f"卖出 {(df['action']=='sell').sum()} 笔）")
         print()
@@ -358,11 +356,11 @@ class BacktestEngine:
         fig.suptitle("AlphaQuant 回测综合报告", fontsize=16, fontweight="bold")
 
         gs = fig.add_gridspec(3, 2, hspace=0.42, wspace=0.32)
-        ax_nav  = fig.add_subplot(gs[0, :])   # 顶部跨全宽：净值曲线
-        ax_dd   = fig.add_subplot(gs[1, 0])   # 中左：回撤曲线
-        ax_mon  = fig.add_subplot(gs[1, 1])   # 中右：月度收益
-        ax_pnl  = fig.add_subplot(gs[2, 0])   # 底左：盈亏分布
-        ax_stat = fig.add_subplot(gs[2, 1])   # 底右：绩效指标文字
+        ax_nav  = fig.add_subplot(gs[0, :])
+        ax_dd   = fig.add_subplot(gs[1, 0])
+        ax_mon  = fig.add_subplot(gs[1, 1])
+        ax_pnl  = fig.add_subplot(gs[2, 0])
+        ax_stat = fig.add_subplot(gs[2, 1])
 
         nav_series = nav_df.set_index("date")["nav"]
 
@@ -370,7 +368,6 @@ class BacktestEngine:
         ax_nav.plot(nav_df["date"], nav_series / INIT_CAPITAL,
                     linewidth=2.2, label="AlphaQuant", color="#2196F3", zorder=5)
 
-        # 各基准用不同颜色和线型
         bm_colors = {
             "上证指数": ("#FF5722", "--"),
             "深证成指": ("#9C27B0", "-."),
@@ -456,12 +453,12 @@ class BacktestEngine:
         ax_stat.axis("off")
         lines = ["绩效指标汇总", "─" * 26]
         label_map = {
-            "总收益率": "总收益率",
+            "总收益率":   "总收益率",
             "年化收益率": "年化收益率",
-            "夏普比率": "夏普比率（>1佳）",
-            "最大回撤": "最大回撤（越小越好）",
-            "胜率": "胜率",
-            "交易次数": "成交笔数",
+            "夏普比率":   "夏普比率（>1佳）",
+            "最大回撤":   "最大回撤（越小越好）",
+            "胜率":       "胜率",
+            "交易次数":   "成交笔数",
             "Calmar比率": "Calmar比率",
         }
         for k, v in metrics.items():

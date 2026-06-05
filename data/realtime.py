@@ -2,6 +2,7 @@
 
 import os
 import re
+import random
 import logging
 from datetime import datetime, date
 
@@ -11,14 +12,16 @@ import pandas as pd
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import STOCK_POOL
-from data.loader import _cache_path
+from data.loader import _cache_path, _USER_AGENTS
 
 logger = logging.getLogger(__name__)
 
-_SINA_HEADERS = {
-    "Referer": "http://finance.sina.com.cn/",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-}
+def _sina_headers() -> dict:
+    return {
+        "Referer": "http://finance.sina.com.cn/",
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
 
 
 def is_trade_day(check_date: date = None) -> bool:
@@ -98,7 +101,7 @@ def fetch_realtime_quote(stock_code: str) -> dict:
     }
     try:
         url = f"https://hq.sinajs.cn/list={stock_code}"
-        resp = requests.get(url, timeout=10, headers=_SINA_HEADERS)
+        resp = requests.get(url, timeout=10, headers=_sina_headers())
         text = resp.content.decode("gb18030", errors="replace")
         result = _parse_sina_quote(stock_code, text)
     except Exception as e:
@@ -121,7 +124,7 @@ def fetch_all_realtime() -> dict:
         codes_str = ",".join(batch)
         try:
             url = f"https://hq.sinajs.cn/list={codes_str}"
-            resp = requests.get(url, timeout=15, headers=_SINA_HEADERS)
+            resp = requests.get(url, timeout=15, headers=_sina_headers())
             text = resp.content.decode("gb18030", errors="replace")
             for code in batch:
                 q = _parse_sina_quote(code, text)

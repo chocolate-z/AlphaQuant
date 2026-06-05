@@ -180,24 +180,32 @@ def index():
 
 @app.route("/holdings")
 def holdings():
+    from data.loader import get_stock_name
     state = _read_account_state()
     rows  = ""
     if not state.get("holdings"):
-        rows = "<tr><td colspan='6' style='text-align:center;color:#8b949e'>当前无持仓</td></tr>"
+        rows = "<tr><td colspan='7' style='text-align:center;color:#8b949e'>当前无持仓</td></tr>"
+    total_holding_pnl = 0.0
     for code, pos in state.get("holdings", {}).items():
+        name   = get_stock_name(code)
         shares = pos.get("shares", 0)
         cost   = pos.get("cost", 0)
         curr   = pos.get("current_price", cost)
         pnl    = (curr - cost) * shares
         pct    = (curr - cost) / max(cost, 0.01) * 100
         cls    = "up" if pnl >= 0 else "down"
-        rows += (f"<tr><td><b>{code}</b></td><td>{shares:,}</td>"
+        total_holding_pnl += pnl
+        rows += (f"<tr><td><b>{code}</b></td><td style='color:#8b949e'>{name}</td>"
+                 f"<td>{shares:,}</td>"
                  f"<td>¥{cost:.2f}</td><td>¥{curr:.2f}</td>"
                  f"<td class='{cls}'>{'+'if pnl>=0 else ''}¥{pnl:,.0f} ({pct:+.1f}%)</td>"
                  f"<td>{pos.get('buy_date','')}</td></tr>")
 
-    body = (f"<h1>当前持仓</h1>"
-            f"<table><thead><tr><th>代码</th><th>持仓数量</th><th>成本价</th>"
+    cls_total = "up" if total_holding_pnl >= 0 else "down"
+    summary = (f"<p style='margin:8px 0;color:#8b949e'>持仓总浮盈亏："
+               f"<span class='{cls_total}'>{'+'if total_holding_pnl>=0 else ''}¥{total_holding_pnl:,.0f}</span></p>")
+    body = (f"<h1>当前持仓</h1>{summary}"
+            f"<table><thead><tr><th>代码</th><th>名称</th><th>持仓数量</th><th>成本价</th>"
             f"<th>当前价</th><th>浮动盈亏</th><th>买入日期</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
     return _page("持仓", body, auto_refresh=120)
@@ -205,6 +213,7 @@ def holdings():
 
 @app.route("/signals")
 def signals():
+    from data.loader import get_stock_name
     cached    = _read_signal_cache()
     sigs      = cached.get("signals", {})
     cache_dt  = f"{cached.get('date','')} {cached.get('time','')}".strip()
@@ -215,9 +224,10 @@ def signals():
 
     rows = ""
     if not sigs:
-        rows = "<tr><td colspan='3' style='text-align:center;color:#8b949e'>暂无信号缓存，请先运行模拟盘或手动触发：python main.py --mode signal</td></tr>"
+        rows = "<tr><td colspan='4' style='text-align:center;color:#8b949e'>暂无信号缓存，请先运行模拟盘或手动触发：python main.py --mode signal</td></tr>"
     for code, prob in sorted(sigs.items(), key=lambda x: -x[1]):
         bar_w = int(prob * 120)
+        name  = get_stock_name(code)
         if prob > 0.65:
             badge = f"<span class='badge-buy'>★ 买入</span>"
         elif prob < 0.35:
@@ -225,11 +235,12 @@ def signals():
         else:
             badge = f"<span class='badge-hold'>— 观望</span>"
         rows += (f"<tr><td><b>{code}</b></td>"
+                 f"<td style='color:#8b949e'>{name}</td>"
                  f"<td><span class='bar' style='width:{bar_w}px'></span> {prob:.1%}</td>"
                  f"<td>{badge}</td></tr>")
 
     body = (f"<h1>今日信号</h1>{note}"
-            f"<table><thead><tr><th>股票代码</th><th>买入概率</th><th>建议</th></tr></thead>"
+            f"<table><thead><tr><th>股票代码</th><th>名称</th><th>买入概率</th><th>建议</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
     return _page("今日信号", body)
 

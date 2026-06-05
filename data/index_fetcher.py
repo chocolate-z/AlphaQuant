@@ -2,6 +2,8 @@
 
 import re
 import json
+import time
+import random
 import logging
 from datetime import datetime
 
@@ -10,9 +12,25 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-}
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
+]
+
+def _headers() -> dict:
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": "https://q.stock.sohu.com/",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Cache-Control": "max-age=0",
+    }
 
 # 5个对比基准指数
 BENCHMARKS = {
@@ -28,16 +46,32 @@ def fetch_index_history(sohu_code: str, start: str, end: str) -> pd.DataFrame:
     """
     从搜狐财经拉取指数日线（前复权）。
     sohu_code 示例: cn_s_sh000001（指数代码需加 s_ 前缀）
-    响应字段: [日期, 开盘, 收盘, 涨跌额, 涨跌幅%, 最低, 最高, 成交量, 成交额, 换手率]
     """
     url = (
-        f"http://q.stock.sohu.com/hisHq"
+        f"https://q.stock.sohu.com/hisHq"
         f"?code={sohu_code}&start={start}&end={end}"
         f"&stat=1&order=D&period=d&callback=historySearchHandler&rt=jsonp"
     )
+
+    for attempt in range(4):
+        try:
+            resp = requests.get(url, timeout=20, headers=_headers(), allow_redirects=True)
+            if resp.status_code in (503, 429):
+                wait = 3 * (2 ** attempt) + random.uniform(0, 2)
+                logger.warning(f"[{sohu_code}] 限流 {resp.status_code}，{wait:.1f}s 后重试")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            if attempt == 3:
+                logger.warning(f"[{sohu_code}] 指数拉取失败: {e}")
+                return pd.DataFrame()
+            time.sleep(2 ** attempt)
+    else:
+        return pd.DataFrame()
+
     try:
-        resp = requests.get(url, timeout=20, headers=_HEADERS, allow_redirects=True)
-        resp.raise_for_status()
         m = re.search(r'historySearchHandler\((.*)\)', resp.text, re.DOTALL)
         if not m:
             return pd.DataFrame()
@@ -63,7 +97,7 @@ def fetch_index_history(sohu_code: str, start: str, end: str) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        logger.warning(f"[{sohu_code}] 指数拉取失败: {e}")
+        logger.warning(f"[{sohu_code}] 指数解析失败: {e}")
         return pd.DataFrame()
 
 
@@ -86,4 +120,5 @@ def fetch_all_benchmarks(start: str, end: str) -> dict:
             logger.info(f"[{name}] 指数加载 {len(df)} 条")
         else:
             logger.warning(f"[{name}] 指数数据为空，跳过")
+        time.sleep(random.uniform(0.3, 0.8))  # 避免连续请求被限流
     return result

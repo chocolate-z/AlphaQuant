@@ -16,6 +16,18 @@ from models.lstm_model import load_model
 
 logger = logging.getLogger(__name__)
 
+# 模块级缓存，避免批量诊断时重复加载模型
+_cached_model = None
+
+
+def _get_model():
+    global _cached_model
+    if _cached_model is None:
+        model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
+        if os.path.exists(model_path):
+            _cached_model = load_model(model_path)
+    return _cached_model
+
 
 def _trend_analysis(df: pd.DataFrame) -> dict:
     """
@@ -130,17 +142,17 @@ def diagnose(stock_code: str, holdings_cost: float = None) -> dict:
     turnover      = float(latest.get("turnover",   0))
     main_inflow   = float(latest.get("main_net_inflow", 0))
 
-    # AI 概率
+    # AI 概率（复用缓存模型，避免批量诊断时重复加载）
     ai_prob = 0.5
     try:
-        model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
-        model      = load_model(model_path)
-        scaler     = load_scaler()
-        X = build_inference_sequence(df, scaler)
-        X_t = torch.tensor(X, dtype=torch.float32)
-        model.eval()
-        with torch.no_grad():
-            ai_prob = float(model(X_t).item())
+        model  = _get_model()
+        scaler = load_scaler()
+        if model is not None:
+            X = build_inference_sequence(df, scaler)
+            X_t = torch.tensor(X, dtype=torch.float32)
+            model.eval()
+            with torch.no_grad():
+                ai_prob = float(model(X_t).item())
     except Exception as e:
         logger.warning(f"AI 推理失败（使用默认值 0.5）: {e}")
 

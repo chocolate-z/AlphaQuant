@@ -76,8 +76,10 @@ def _print_menu():
     _box_line("  【工具】")
     _box_line("  8  个股诊断")
     _box_line("  9  单股买卖点图（K线 + 模型信号）")
+    _box_line("  p  持仓一键诊断（模拟盘所有持仓）")
     _box_line("  v  查看训练/回测报告图表")
     _box_line("  e  导出今日信号到 Excel")
+    _box_line("  c  查看当前配置参数")
     _box_line("  r  重置虚拟账户")
     _box_line()
     _box_line("  0  退出")
@@ -116,12 +118,13 @@ def run_train(quick: bool = False, force_refresh: bool = False, resume: bool = F
 
 
 def run_backtest():
+    import pandas as pd
     from data.loader import load_all_stocks
     from features.builder import load_scaler
     from models.lstm_model import load_model
     from backtest.engine import BacktestEngine
     from data.index_fetcher import fetch_all_benchmarks
-    from config import MODEL_SAVE_DIR, START_DATE, RELATIVE_RANK_MODE
+    from config import MODEL_SAVE_DIR, START_DATE, RELATIVE_RANK_MODE, WINDOW_SIZE
 
     model_path = os.path.join(MODEL_SAVE_DIR, "lstm_best.pt")
     if not os.path.exists(model_path):
@@ -139,13 +142,15 @@ def run_backtest():
     start_str = _ask("回测起始日期（格式 YYYYMMDD，默认 20150101）", _default_start)
     end_str   = _ask(f"回测结束日期（格式 YYYYMMDD，默认 {_default_end}）", _default_end)
 
-    # 验证日期格式
     for _label, _val in [("起始日期", start_str), ("结束日期", end_str)]:
         try:
             datetime.strptime(_val, "%Y%m%d")
         except ValueError:
             print(f"  ✗ {_label} 格式错误：{_val}，应为 YYYYMMDD")
             return
+
+    start_dt = pd.Timestamp(datetime.strptime(start_str, "%Y%m%d"))
+    end_dt   = pd.Timestamp(datetime.strptime(end_str,   "%Y%m%d"))
 
     logger.info("正在拉取5个基准指数历史数据...")
     benchmarks = fetch_all_benchmarks(start_str, end_str)
@@ -154,9 +159,22 @@ def run_backtest():
     else:
         logger.warning("基准指数拉取失败，将跳过对比图")
 
-    stock_data = load_all_stocks(start=start_str, end=end_str)
-    model      = load_model(model_path)
-    scaler     = load_scaler()
+    # 优先使用本地缓存（避免每次回测都重新下载），再按日期筛选
+    print("\n  正在加载股票数据（优先使用缓存）...")
+    stock_data_all = load_all_stocks()
+    stock_data = {}
+    for code, df in stock_data_all.items():
+        filtered = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)].reset_index(drop=True)
+        if len(filtered) >= WINDOW_SIZE + 5:
+            stock_data[code] = filtered
+    print(f"  日期筛选后：{len(stock_data)} 只股票在回测区间内有足够数据")
+
+    if not stock_data:
+        print("  ✗ 无有效数据，请先运行训练（选项 1）下载股票数据后再回测")
+        return
+
+    model  = load_model(model_path)
+    scaler = load_scaler()
     BacktestEngine(stock_data, model, scaler, benchmarks=benchmarks).run()
     logger.info("回测完成")
 
@@ -477,6 +495,88 @@ def run_export_excel():
         print(f"\n  openpyxl 未安装，已保存为 CSV: {csv_path}\n")
 
 
+def run_portfolio_diagnose():
+    """诊断模拟盘当前所有持仓。"""
+    import json
+    from config import LOGS_DIR
+    from diagnose.analyzer import diagnose
+    from diagnose.report import print_report, print_batch_summary
+
+    state_file = os.path.join(LOGS_DIR, "account_state.json")
+    if not os.path.exists(state_file):
+        print("\n  虚拟账户文件不存在，请先启动模拟盘\n")
+        return
+
+    with open(state_file, encoding="utf-8") as f:
+        state = json.load(f)
+
+    holdings = state.get("holdings", {})
+    if not holdings:
+        print("\n  当前无持仓，无需诊断\n")
+        return
+
+    print(f"\n  正在诊断 {len(holdings)} 只持仓股票...\n")
+    results = []
+    for code, pos in holdings.items():
+        cost = pos.get("cost")
+        try:
+            r = diagnose(code, holdings_cost=cost)
+            print_report(r)
+            results.append(r)
+        except Exception as e:
+            logger.error(f"[{code}] 诊断失败: {e}")
+
+    if len(results) > 1:
+        print_batch_summary(results)
+
+
+def run_show_config():
+    """展示当前 config.py 中所有可调参数。"""
+    import config as _cfg
+
+    fields = {
+        "── 数据 ──────────────────────────": None,
+        "START_DATE":         (_cfg.START_DATE,         "历史数据起始日期"),
+        "WINDOW_SIZE":        (_cfg.WINDOW_SIZE,         "时间窗口大小（天）"),
+        "FEATURE_DIM":        (_cfg.FEATURE_DIM,         "特征维度数"),
+        "FULL_STOCK_COUNT":   (_cfg.FULL_STOCK_COUNT,    "完整模式随机抽取股票数"),
+        "QUICK_STOCK_COUNT":  (_cfg.QUICK_STOCK_COUNT,   "快速模式随机抽取股票数"),
+        "QUICK_HISTORY_YEARS":(_cfg.QUICK_HISTORY_YEARS, "快速模式历史年数"),
+        "── 模型 ──────────────────────────": None,
+        "LSTM_HIDDEN1":       (_cfg.LSTM_HIDDEN1,        "GRU第1层隐藏单元数"),
+        "LSTM_HIDDEN2":       (_cfg.LSTM_HIDDEN2,        "GRU第2层隐藏单元数"),
+        "DROPOUT":            (_cfg.DROPOUT,             "Dropout比率"),
+        "LEARNING_RATE":      (_cfg.LEARNING_RATE,       "初始学习率"),
+        "BATCH_SIZE":         (_cfg.BATCH_SIZE,          "训练批大小"),
+        "MAX_EPOCHS":         (_cfg.MAX_EPOCHS,          "最大训练轮数"),
+        "EARLY_STOP_PATIENCE":(_cfg.EARLY_STOP_PATIENCE, "早停耐心（轮）"),
+        "CPU_THREAD_RATIO":   (_cfg.CPU_THREAD_RATIO,    "CPU线程比率（0=全用，0.5=一半）"),
+        "── 回测 & 风控 ────────────────────": None,
+        "INIT_CAPITAL":       (_cfg.INIT_CAPITAL,        "初始资金（元）"),
+        "BUY_THRESHOLD":      (_cfg.BUY_THRESHOLD,       "买入概率阈值"),
+        "SELL_THRESHOLD":     (_cfg.SELL_THRESHOLD,      "卖出概率阈值"),
+        "STOP_LOSS_RATIO":    (_cfg.STOP_LOSS_RATIO,     "单股止损线"),
+        "TAKE_PROFIT_RATIO":  (_cfg.TAKE_PROFIT_RATIO,   "单股止盈线"),
+        "PORTFOLIO_STOP":     (_cfg.PORTFOLIO_STOP,      "组合止损线"),
+        "MAX_HOLDINGS":       (_cfg.MAX_HOLDINGS,        "最大持仓数量"),
+        "MAX_POSITION_RATIO": (_cfg.MAX_POSITION_RATIO,  "单股最大仓位比例"),
+        "RELATIVE_RANK_MODE": (_cfg.RELATIVE_RANK_MODE,  "相对排名模式"),
+        "TOP_N_BUY":          (_cfg.TOP_N_BUY,           "每日最多买入候选数"),
+    }
+
+    print("\n" + "=" * 62)
+    print("  AlphaQuant 当前配置（修改 config.py 生效）")
+    print("=" * 62)
+    for key, val in fields.items():
+        if val is None:
+            print(f"\n  {key}")
+            continue
+        v, desc = val
+        print(f"  {key:<22} {str(v):<12}  # {desc}")
+    print("=" * 62)
+    print("\n  提示：直接编辑 config.py 修改参数，重启程序后生效\n")
+
+
 def run_reset():
     import json
     from config import LOGS_DIR, INIT_CAPITAL
@@ -524,8 +624,10 @@ def interactive_menu():
         "7": run_signal,
         "8": run_diagnose,
         "9": run_single_backtest,
+        "p": run_portfolio_diagnose,
         "v": run_view_reports,
         "e": run_export_excel,
+        "c": run_show_config,
         "r": run_reset,
     }
 

@@ -82,6 +82,7 @@ RELATIVE_RANK_MODE  = True
 TOP_N_BUY           = 3          # 每日最多买入候选数（实际受 MAX_HOLDINGS 限制）
 RANK_SELL_BOTTOM    = 0.40       # 相对模式下：概率低于此值触发卖出
 STOP_LOSS_RATIO    = -0.07       # 单股止损
+TAKE_PROFIT_RATIO  =  0.20       # 单股止盈（涨幅超过此值自动卖出）
 PORTFOLIO_STOP     = -0.12       # 组合止损
 SUSPEND_DAYS       = 3           # 触发组合止损后暂停天数
 
