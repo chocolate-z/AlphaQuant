@@ -80,6 +80,8 @@ _CSS = """
   --line:rgba(0,0,0,.08); --hairline:rgba(0,0,0,.06); --hover:rgba(0,0,0,.045);
   --accent:#0071e3; --accent-h:#0077ed; --accent-soft:rgba(0,113,227,.12);
   --up:#1d8a3f; --up-s:rgba(52,199,89,.14); --down:#d70015; --down-s:rgba(255,59,48,.12); --warn:#b25e00;
+  /* A股「红涨绿跌」：盈亏/买卖方向专用（与上面系统状态 ok=绿/err=红 区分开） */
+  --rise:#d70015; --rise-s:rgba(255,59,48,.12); --fall:#1d8a3f; --fall-s:rgba(52,199,89,.14);
   --sidebar:rgba(246,246,248,.75); --radius:18px; --radius-sm:12px;
   --shadow:0 1px 2px rgba(0,0,0,.04),0 6px 20px rgba(0,0,0,.05);
   --shadow-lg:0 8px 36px rgba(0,0,0,.12);
@@ -91,6 +93,7 @@ _CSS = """
     --line:rgba(255,255,255,.1); --hairline:rgba(255,255,255,.07); --hover:rgba(255,255,255,.06);
     --accent:#0a84ff; --accent-h:#3a9bff; --accent-soft:rgba(10,132,255,.22);
     --up:#30d158; --up-s:rgba(48,209,88,.18); --down:#ff453a; --down-s:rgba(255,69,58,.18); --warn:#ffd60a;
+    --rise:#ff453a; --rise-s:rgba(255,69,58,.18); --fall:#30d158; --fall-s:rgba(48,209,88,.18);
     --sidebar:rgba(28,28,30,.72);
     --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.4);
     --shadow-lg:0 10px 40px rgba(0,0,0,.6);
@@ -101,6 +104,7 @@ _CSS = """
     --line:rgba(255,255,255,.1); --hairline:rgba(255,255,255,.07); --hover:rgba(255,255,255,.06);
     --accent:#0a84ff; --accent-h:#3a9bff; --accent-soft:rgba(10,132,255,.22);
     --up:#30d158; --up-s:rgba(48,209,88,.18); --down:#ff453a; --down-s:rgba(255,69,58,.18); --warn:#ffd60a;
+    --rise:#ff453a; --rise-s:rgba(255,69,58,.18); --fall:#30d158; --fall-s:rgba(48,209,88,.18);
     --sidebar:rgba(28,28,30,.72);
     --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.4);
     --shadow-lg:0 10px 40px rgba(0,0,0,.6);
@@ -151,10 +155,10 @@ tbody tr:hover td{background:var(--hover)}
 .card:hover{background:var(--card-2);border-color:var(--accent-soft)}
 .val{font-size:1.75em;font-weight:600;color:var(--text);margin:5px 0 0;letter-spacing:-.025em}
 .lbl{color:var(--sub);font-size:.8em;font-weight:500}
-.up{color:var(--up)}.down{color:var(--down)}.neutral{color:var(--sub)}
+.up{color:var(--rise)}.down{color:var(--fall)}.neutral{color:var(--sub)}
 .bar{display:inline-block;background:var(--accent);height:8px;border-radius:4px;vertical-align:middle}
-.badge-buy{background:var(--up-s);color:var(--up);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
-.badge-sell{background:var(--down-s);color:var(--down);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
+.badge-buy{background:var(--rise-s);color:var(--rise);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
+.badge-sell{background:var(--fall-s);color:var(--fall);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
 .badge-hold{background:var(--hover);color:var(--sub);padding:3px 11px;border-radius:20px;font-size:.82em;font-weight:600}
 /* ── 表单控件 ── */
 input,select{background:var(--card);border:1px solid var(--line);color:var(--text);padding:8px 12px;
@@ -214,8 +218,8 @@ canvas{max-width:100%}
 .pill{display:inline-flex;align-items:baseline;gap:6px;padding:8px 15px;border-radius:980px;
   font-weight:600;font-size:.95em}
 .pill small{font-weight:500;opacity:.65;margin-left:2px;font-size:.82em}
-.pill-up{background:var(--up-s);color:var(--up)}
-.pill-down{background:var(--down-s);color:var(--down)}
+.pill-up{background:var(--rise-s);color:var(--rise)}
+.pill-down{background:var(--fall-s);color:var(--fall)}
 .pill-flat{background:var(--hover);color:var(--sub)}
 /* ── 表格微观可视化 ── */
 .track{display:inline-block;width:110px;height:8px;background:var(--hover);border-radius:4px;
@@ -467,7 +471,7 @@ def holdings():
             today_cell = "<span style='color:var(--sub)'>—</span>"   # 拿不到昨收时不瞎算
 
         barpx  = min(abs(pct), 10) / 10 * 54   # |涨跌幅| 满格 10%
-        fillc  = "var(--up)" if pnl >= 0 else "var(--down)"
+        fillc  = "var(--rise)" if pnl >= 0 else "var(--fall)"
         minibar = f"<span class='minibar'><i style='width:{barpx:.0f}px;background:{fillc}'></i></span>"
         rows += (f"<tr><td><b>{code}</b></td><td style='color:var(--sub)'>{name}</td>"
                  f"<td>{shares:,}</td>"
@@ -516,9 +520,9 @@ def signals():
     for code, prob in sorted(sigs.items(), key=lambda x: -x[1]):
         name  = get_stock_name(code)
         if prob > 0.65:
-            badge = f"<span class='badge-buy'>★ 买入</span>"; col = "var(--up)"
+            badge = f"<span class='badge-buy'>★ 买入</span>"; col = "var(--rise)"
         elif prob < 0.35:
-            badge = f"<span class='badge-sell'>▼ 卖出</span>"; col = "var(--down)"
+            badge = f"<span class='badge-sell'>▼ 卖出</span>"; col = "var(--fall)"
         else:
             badge = f"<span class='badge-hold'>— 观望</span>"; col = "var(--accent)"
         barfill = f"<span class='track'><span class='fill' style='width:{prob*100:.0f}%;background:{col}'></span></span>"
