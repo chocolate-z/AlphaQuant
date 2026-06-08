@@ -47,10 +47,15 @@ def _read_all_trades(filter_code: str = "", filter_date: str = "") -> list:
         if fn.startswith("trades_") and fn.endswith(".csv"):
             if filter_date and filter_date.replace("-", "") not in fn:
                 continue
+            # 日期藏在文件名里：trades_YYYYMMDD.csv → YYYY-MM-DD
+            ymd = fn[len("trades_"):-len(".csv")]
+            date_str = (f"{ymd[0:4]}-{ymd[4:6]}-{ymd[6:8]}"
+                        if len(ymd) == 8 and ymd.isdigit() else ymd)
             with open(os.path.join(LOGS_DIR, fn), encoding="utf-8") as f:
                 for row in csv.DictReader(f):
                     if filter_code and filter_code.lower() not in row.get("code", "").lower():
                         continue
+                    row["date"] = date_str
                     trades.append(row)
     return trades
 
@@ -416,37 +421,82 @@ def index():
 @app.route("/holdings")
 def holdings():
     from data.loader import get_stock_name
+    from data.realtime import fetch_all_realtime, is_market_open
+    from datetime import datetime as _dt
     state = _read_account_state()
-    rows  = ""
-    if not state.get("holdings"):
-        rows = "<tr><td colspan='7' style='text-align:center;color:var(--sub)'>当前无持仓</td></tr>"
+    held  = state.get("holdings", {})
+
+    # 拉实时价 + 昨收（持仓最多5只，单次请求即可），用于「当日盈亏」与「当前价」实时化
+    rt = {}
+    if held:
+        try:
+            rt = fetch_all_realtime(list(held))
+        except Exception:
+            rt = {}
+    today_str = _dt.today().strftime("%Y-%m-%d")
+
+    rows = ""
+    if not held:
+        rows = "<tr><td colspan='8' style='text-align:center;color:var(--sub)'>当前无持仓</td></tr>"
     total_holding_pnl = 0.0
-    for code, pos in state.get("holdings", {}).items():
+    total_today_pnl   = 0.0
+    for code, pos in held.items():
         name   = get_stock_name(code)
         shares = pos.get("shares", 0)
         cost   = pos.get("cost", 0)
-        curr   = pos.get("current_price", cost)
+        q      = rt.get(code, {})
+        curr   = q.get("close") or pos.get("current_price", cost)   # 实时价优先，缺失回退收盘价
+        prev_c = q.get("prev_close", 0)
+
+        # 浮动盈亏（相对成本，累计）
         pnl    = (curr - cost) * shares
         pct    = (curr - cost) / max(cost, 0.01) * 100
         cls    = "up" if pnl >= 0 else "down"
         total_holding_pnl += pnl
+
+        # 当日盈亏：今日买入的按成本算，其余按昨收算（券商口径）
+        base = cost if pos.get("buy_date") == today_str else prev_c
+        if base and base > 0:
+            tpnl = (curr - base) * shares
+            tpct = (curr - base) / base * 100
+            tcls = "up" if tpnl >= 0 else "down"
+            today_cell = (f"<span class='{tcls}'>{'+'if tpnl>=0 else ''}"
+                          f"¥{tpnl:,.0f} ({tpct:+.1f}%)</span>")
+            total_today_pnl += tpnl
+        else:
+            today_cell = "<span style='color:var(--sub)'>—</span>"   # 拿不到昨收时不瞎算
+
         barpx  = min(abs(pct), 10) / 10 * 54   # |涨跌幅| 满格 10%
         fillc  = "var(--up)" if pnl >= 0 else "var(--down)"
         minibar = f"<span class='minibar'><i style='width:{barpx:.0f}px;background:{fillc}'></i></span>"
         rows += (f"<tr><td><b>{code}</b></td><td style='color:var(--sub)'>{name}</td>"
                  f"<td>{shares:,}</td>"
                  f"<td>¥{cost:.2f}</td><td>¥{curr:.2f}</td>"
+                 f"<td>{today_cell}</td>"
                  f"<td class='{cls}'>{'+'if pnl>=0 else ''}¥{pnl:,.0f} ({pct:+.1f}%){minibar}</td>"
                  f"<td>{pos.get('buy_date','')}</td></tr>")
 
-    cls_total = "up" if total_holding_pnl >= 0 else "down"
-    summary = (f"<p style='margin:8px 0;color:var(--sub)'>持仓总浮盈亏："
+    cls_total  = "up" if total_holding_pnl >= 0 else "down"
+    tcls_total = "up" if total_today_pnl   >= 0 else "down"
+    summary = (f"<p style='margin:8px 0;color:var(--sub)'>"
+               f"当日盈亏：<span class='{tcls_total}'>{'+'if total_today_pnl>=0 else ''}¥{total_today_pnl:,.0f}</span>"
+               f"　·　持仓总浮盈亏："
                f"<span class='{cls_total}'>{'+'if total_holding_pnl>=0 else ''}¥{total_holding_pnl:,.0f}</span></p>")
-    body = (f"<h1>当前持仓</h1>{summary}"
+
+    # 盘中每5秒自动刷新；非交易时段静态，靠手动刷新按钮
+    mkt_open = is_market_open()
+    ar       = 5 if mkt_open else 0
+    status   = (f"<span class='dot dot-run'></span>盘中 · 每5秒自动刷新" if mkt_open
+                else f"<span class='dot dot-idle'></span>非交易时段 · 点「刷新」手动更新")
+    toolbar = (f"<div class='filter-bar'>"
+               f"<span class='note'>{status}　·　更新于 {_dt.now().strftime('%H:%M:%S')}</span>"
+               f"<button type='button' onclick='location.reload()'>刷新</button></div>")
+
+    body = (f"<h1>当前持仓</h1>{toolbar}{summary}"
             f"<table><thead><tr><th>代码</th><th>名称</th><th>持仓数量</th><th>成本价</th>"
-            f"<th>当前价</th><th>浮动盈亏</th><th>买入日期</th></tr></thead>"
+            f"<th>当前价</th><th>当日盈亏</th><th>浮动盈亏</th><th>买入日期</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
-    return _page("持仓", body, active="holdings", auto_refresh=120)
+    return _page("持仓", body, active="holdings", auto_refresh=ar)
 
 
 @app.route("/signals")
@@ -509,16 +559,17 @@ def trades():
         cls    = "up" if action == "buy" else "down"
         badge  = (f"<span class='badge-buy'>↗ 买入</span>" if action == "buy"
                   else f"<span class='badge-sell'>↘ 卖出</span>")
-        rows += (f"<tr><td>{t.get('time','')}</td><td><b>{t.get('code','')}</b></td>"
+        rows += (f"<tr><td>{t.get('date','')}</td><td style='color:var(--sub)'>{t.get('time','')}</td>"
+                 f"<td><b>{t.get('code','')}</b></td>"
                  f"<td>{badge}</td><td>¥{t.get('price','')}</td>"
                  f"<td>{t.get('shares','')}</td><td>{t.get('commission','')}</td>"
                  f"<td style='color:var(--sub)'>{t.get('reason','')}</td></tr>")
 
     if not rows:
-        rows = "<tr><td colspan='7' style='text-align:center;color:var(--sub)'>暂无交易记录</td></tr>"
+        rows = "<tr><td colspan='8' style='text-align:center;color:var(--sub)'>暂无交易记录</td></tr>"
 
     body = (f"<h1>历史交易记录</h1>{filter_form}"
-            f"<table><thead><tr><th>时间</th><th>代码</th><th>操作</th>"
+            f"<table><thead><tr><th>日期</th><th>时间</th><th>代码</th><th>操作</th>"
             f"<th>价格</th><th>数量</th><th>手续费</th><th>原因</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
     return _page("历史交易", body, active="trades")

@@ -34,6 +34,18 @@ def is_trade_day(check_date: date = None) -> bool:
     return check_date.weekday() < 5
 
 
+def is_market_open(now: datetime = None) -> bool:
+    """
+    判断当前是否处于 A股连续交易时段：09:30–11:30、13:00–15:00，且为交易日。
+    供看板决定「盘中每5秒刷新」用。
+    """
+    now = now or datetime.now()
+    if not is_trade_day(now.date()):
+        return False
+    m = now.hour * 60 + now.minute
+    return (570 <= m <= 690) or (780 <= m <= 900)
+
+
 def _parse_sina_quote(code: str, text: str) -> dict:
     """
     解析新浪行情文本中单只股票的数据。
@@ -42,7 +54,7 @@ def _parse_sina_quote(code: str, text: str) -> dict:
     result = {
         "stock_code": code,
         "date": datetime.today().date(),
-        "open": 0.0, "close": 0.0, "high": 0.0, "low": 0.0,
+        "open": 0.0, "close": 0.0, "high": 0.0, "low": 0.0, "prev_close": 0.0,
         "volume": 0.0, "amount": 0.0, "pct_change": 0.0,
         "turnover": 0.0, "volume_ratio": 1.0, "main_net_inflow": 0.0,
     }
@@ -73,7 +85,7 @@ def _parse_sina_quote(code: str, text: str) -> dict:
         pct = (close - prev) / prev * 100 if prev > 0 else 0.0
 
         result.update({
-            "open": open_, "close": close, "high": high, "low": low,
+            "open": open_, "close": close, "high": high, "low": low, "prev_close": prev,
             "volume": volume, "amount": amount, "pct_change": round(pct, 2),
         })
     except (ValueError, ZeroDivisionError):
@@ -106,7 +118,7 @@ def _parse_tencent_quote(code: str, fields: list) -> dict:
         pct = (close - prev) / prev * 100 if prev > 0 else 0.0
         return {
             "stock_code": code, "date": datetime.today().date(),
-            "open": open_, "close": close, "high": high, "low": low,
+            "open": open_, "close": close, "high": high, "low": low, "prev_close": prev,
             "volume": volume, "amount": amount, "pct_change": round(pct, 2),
             "turnover": 0.0, "volume_ratio": 1.0, "main_net_inflow": 0.0,
         }
@@ -158,7 +170,7 @@ def fetch_realtime_quote(stock_code: str) -> dict:
     result = {
         "stock_code": stock_code,
         "date": datetime.today().date(),
-        "open": 0.0, "close": 0.0, "high": 0.0, "low": 0.0,
+        "open": 0.0, "close": 0.0, "high": 0.0, "low": 0.0, "prev_close": 0.0,
         "volume": 0.0, "amount": 0.0, "pct_change": 0.0,
         "turnover": 0.0, "volume_ratio": 1.0, "main_net_inflow": 0.0,
     }
